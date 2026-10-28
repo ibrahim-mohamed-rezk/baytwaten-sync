@@ -34,6 +34,13 @@ UI text is Egyptian Arabic, RTL.
     Recoveries are logged as `resync_recovered`. The window can reach into yesterday, which is fine.
   - `refetch_today()` re-reads all of today, ignoring `last_msg_id`. It's behind the gap alert's
     "🔁 هات الرسايل الناقصة" button (`POST /api/listener/refetch-today`).
+  - Edits: a `MessageEdited` handler runs `save_edit()`.
+    - A message we never saved gets saved now; it may only parse after the edit.
+    - A saved row that is still `pending` takes the new plot fields (`EDIT_FIELDS`), is logged as `edited`
+      ("plot: 6172 -> 6173"), and is queued again.
+    - A row with any other status is left alone (it may already be reserved in the dashboard) and logged as `edit_ignored`.
+    - An edit that no longer parses is logged as `edit_unparsed`.
+    - Resync doesn't apply edits to rows that already exist. Only the handler does.
   - A message containing "تم حجز" that doesn't parse is logged once as `unparsed` (`msg <id>: <first 200 chars>`).
     `db.unparsed_today()` feeds the panel's expandable "في N رسالة مااتقرتش" alert, leaving out any message that has a plot row since.
 - `app/db.py`: SQLite (`data.sqlite3`, overridable with `SYNC_DB_PATH`, which tests use). Tables: `plots`, `settings`, `region_aliases`, `log`.

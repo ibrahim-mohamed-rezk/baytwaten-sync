@@ -104,6 +104,47 @@ async def test_insert_plot_dedupes_by_msg_id():
     assert ids.count(None) == 1 and len(db.q("SELECT 1 FROM plots WHERE msg_id=400")) == 1, ids
 
 
+async def test_edits():
+    queued = []
+
+    async def on_new_plot(plot_id):
+        queued.append(plot_id)
+    lst = make_listener([])
+    lst.on_new_plot = on_new_plot
+    text = RESERVATIONS[0].replace("رقم القطعة: 172", "رقم القطعة: 6172")
+    row = lambda msg_id: db.q("SELECT * FROM plots WHERE msg_id=?", (msg_id,))[0]  # noqa: E731
+
+    # not saved before (didn't parse at first) -> the edit saves it
+    m = FakeMessage(500, BROKEN)
+    assert await lst.save_edit(m) == "ignored"
+    m.message = text
+    assert await lst.save_edit(m) == "new" and row(500)["status"] == "pending"
+
+    # pending + plot changed -> row updated, logged, queued again
+    pid = row(500)["id"]
+    queued.clear()
+    m.message = text.replace("رقم القطعة: 6172", "رقم القطعة: 6173").replace("500 م²", "510 م²")
+    assert await lst.save_edit(m) == "updated"
+    r = row(500)
+    assert (r["plot"], r["area"], r["raw"]) == ("6173", 510, m.message) and r["plot_key"].endswith("|6173")
+    assert queued == [pid]
+    assert "plot: 6172 -> 6173" in db.q("SELECT detail FROM log WHERE action='edited' AND plot_id=?", (pid,))[0]["detail"]
+
+    # edit that doesn't touch plot fields (e.g. the update timestamp) -> nothing to do
+    assert await lst.save_edit(FakeMessage(500, m.message.replace("11:42", "11:50"))) == "unchanged"
+
+    # not pending any more (maybe reserved already) -> keep the row, log for review
+    db.update_plot(pid, status="done")
+    m.message = m.message.replace("6173", "6174")
+    assert await lst.save_edit(m) == "kept"
+    assert row(500)["plot"] == "6173" and row(500)["status"] == "done"
+    assert db.q("SELECT 1 FROM log WHERE action='edit_ignored' AND plot_id=?", (pid,))
+
+    # a saved message edited into something unparseable -> logged, row untouched
+    assert await lst.save_edit(FakeMessage(500, BROKEN)) == "ignored"
+    assert row(500)["plot"] == "6173" and db.q("SELECT 1 FROM log WHERE action='edit_unparsed' AND plot_id=?", (pid,))
+
+
 async def test_gap_triggers_resync():
     lst = make_listener([])
     calls = []

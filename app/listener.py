@@ -17,6 +17,8 @@ RESYNC_EVERY = 120     # seconds between periodic resyncs of the latest messages
 RESYNC_LIMIT = 100     # how many recent channel messages a resync re-reads
 GAP_RESYNC_EVERY = 60  # a gap in the daily counter triggers a resync at most this often
 TICK = 15              # how often the resync loop wakes up to check
+# plot fields an edit may change on a pending row
+EDIT_FIELDS = ("city", "sector", "block", "plot", "area", "features", "down_payment")
 SESSION = os.path.join(os.path.dirname(__file__), "..", "telegram")
 
 
@@ -81,12 +83,46 @@ class Listener:
                 await self.on_new_plot(plot_id)
         return plot_id
 
+    async def save_edit(self, msg) -> str:
+        """The channel edited a message. Returns what we did: new | updated | unchanged | kept | ignored.
+
+        Not saved before -> save it now (it may only parse after the edit).
+        Saved and still pending -> take the new plot fields and queue it again. Any other status -> keep the
+        row as it is (it may already be reserved in the dashboard) and just log the edit for review.
+        """
+        rows = db.q("SELECT * FROM plots WHERE msg_id=?", (msg.id,))
+        if not rows:
+            return "new" if await self.save_message(msg) else "ignored"
+        row, r = rows[0], parse_reservation(msg.message or "")
+        if not r:
+            db.log("edit_unparsed", row["id"], f"msg {msg.id}: {(msg.message or '')[:200]}")
+            return "ignored"
+        changes = {k: r[k] for k in EDIT_FIELDS if r[k] != row[k]}
+        if not changes:
+            return "unchanged"
+        detail = "; ".join(f"{k}: {row[k]} -> {v}" for k, v in changes.items())
+        if row["status"] != "pending":
+            db.log("edit_ignored", row["id"], f"status {row['status']}: {detail}")
+            return "kept"
+        db.update_plot(row["id"], **changes, day_count=r["day_count"], plot_key=plot_key(r), raw=msg.message)
+        db.log("edited", row["id"], detail)
+        if self.on_new_plot:
+            await self.on_new_plot(row["id"])
+        return "updated"
+
     async def _on_message(self, event):
         try:
             await self.save_message(event.message)
         except Exception as e:  # never let one bad message kill the listener
             log.exception("failed to save message %s", event.message.id)
             db.log("error", detail=f"msg {event.message.id}: {e}")
+
+    async def _on_edit(self, event):
+        try:
+            await self.save_edit(event.message)
+        except Exception as e:
+            log.exception("failed to apply edit of message %s", event.message.id)
+            db.log("error", detail=f"edit of msg {event.message.id}: {e}")
 
     async def _save_all(self, messages) -> int:
         """Save messages (a list or Telethon's async iterator), oldest first. Returns how many were new."""
@@ -144,6 +180,7 @@ class Listener:
             try:
                 await self._ensure_connected()
                 self.client.add_event_handler(self._on_message, events.NewMessage(chats=self.channel))
+                self.client.add_event_handler(self._on_edit, events.MessageEdited(chats=self.channel))
                 await self.client.catch_up()  # replay queued updates, now that the handler can see them
                 self.running = True
                 db.set_setting("listener_enabled", 1)
@@ -163,6 +200,7 @@ class Listener:
                 self._resync_task = None
             if self.client:
                 self.client.remove_event_handler(self._on_message)
+                self.client.remove_event_handler(self._on_edit)
             self.running = False
             db.set_setting("listener_enabled", 0)
             db.log("listener_stop")
