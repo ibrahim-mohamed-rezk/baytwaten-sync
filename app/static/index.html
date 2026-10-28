@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>لوحة الأوتوميشن</title>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --text:#1d2433; --muted:#6b7385; --line:#e4e7ee;
+          --blue:#4f6af0; --green:#16a34a; --red:#dc2626; --amber:#d97706; --gray:#6b7280; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "Segoe UI", Tahoma, sans-serif; background:var(--bg); color:var(--text); }
+  header { background:var(--card); border-bottom:1px solid var(--line); padding:14px 20px;
+           display:flex; flex-wrap:wrap; gap:12px; align-items:center; position:sticky; top:0; z-index:2; }
+  h1 { font-size:18px; margin:0 0 0 auto; }
+  button { font:inherit; border:1px solid var(--line); background:var(--card); border-radius:8px;
+           padding:7px 12px; cursor:pointer; }
+  button:hover { filter:brightness(.96); }
+  button.primary { background:var(--blue); color:#fff; border-color:var(--blue); }
+  button.ok { background:var(--green); color:#fff; border-color:var(--green); }
+  button.danger { color:var(--red); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px;
+          font-size:13px; background:#eef0f5; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--gray); }
+  .on .dot { background:var(--green); box-shadow:0 0 0 3px #16a34a33; }
+  main { padding:16px 20px; max-width:1400px; margin:auto; }
+  .stats { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; min-width:110px; }
+  .stat b { display:block; font-size:22px; }
+  .stat span { color:var(--muted); font-size:13px; }
+  .alert { background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; border-radius:10px;
+           padding:10px 14px; margin-bottom:12px; display:none; }
+  .alert.err { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+  .tabs button.active { background:var(--text); color:#fff; border-color:var(--text); }
+  input[type=search] { font:inherit; padding:7px 10px; border:1px solid var(--line); border-radius:8px; min-width:220px; }
+  .table-wrap { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { padding:9px 10px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
+  th { background:#fafbfd; color:var(--muted); font-weight:600; position:sticky; top:0; }
+  tr.new { animation: flash 3s ease-out; }
+  @keyframes flash { from { background:#e0e7ff; } to { background:transparent; } }
+  td.wrap { white-space:normal; min-width:140px; max-width:220px; }
+  .plotno { font-weight:700; font-size:15px; cursor:copy; }
+  .status { font-size:12px; padding:3px 8px; border-radius:999px; color:#fff; }
+  .s-pending { background:var(--amber); } .s-done { background:var(--green); }
+  .s-failed { background:var(--red); } .s-rejected, .s-duplicate { background:var(--gray); }
+  .status { display:inline-block; }
+  .note { margin-top:4px; color:var(--muted); font-size:12px; white-space:normal; max-width:280px; }
+  .actions { display:flex; gap:6px; }
+  a.link { color:var(--blue); text-decoration:none; align-self:center; font-size:13px; }
+  .empty { padding:40px; text-align:center; color:var(--muted); }
+  #toast { position:fixed; bottom:20px; left:20px; background:var(--text); color:#fff; padding:10px 16px;
+           border-radius:8px; opacity:0; transition:.2s; pointer-events:none; }
+  #toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>لوحة الأوتوميشن – حجوزات بيت الوطن</h1>
+  <span id="listenerPill" class="pill"><span class="dot"></span><span id="listenerText">…</span></span>
+  <button id="listenerBtn">…</button>
+  <span class="pill" title="تحديث الداشبورد تلقائي للقطع المطابقة 100%">
+    <label><input type="checkbox" id="autoMode"> تحديث تلقائي</label>
+  </span>
+</header>
+<main>
+  <div id="errorBox" class="alert err"></div>
+  <div id="missingBox" class="alert"></div>
+  <div id="dashBox" class="alert">الربط مع الداشبورد لسه مش جاهز. لحد ما يجهز: اضغط على رقم القطعة عشان تنسخه، حدّثها في الداشبورد، وبعدين اضغط "تم يدوي".</div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="toolbar">
+    <div class="tabs" id="tabs"></div>
+    <input type="search" id="search" placeholder="بحث برقم القطعة أو المنطقة…">
+    <label><input type="checkbox" id="todayOnly" checked> النهارده بس</label>
+    <span style="flex:1"></span>
+    <button class="ok" id="approveAll">✅ حدّث كل المنتظر</button>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>الوقت</th><th>#اليوم</th><th>المدينة</th><th>الحي / المنطقة</th><th>المربع / المجاورة</th>
+        <th>رقم القطعة</th><th>المساحة</th><th>التميز</th><th>المقدم</th><th>الحالة</th><th></th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>مفيش قطع هنا</div>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+const STATUS = { pending:"منتظر", done:"اتحدّث", failed:"محتاج مراجعة", rejected:"مرفوض", duplicate:"مكرر" };
+const TABS = [["pending","منتظر"],["failed","محتاج مراجعة"],["done","اتحدّث"],["duplicate","مكرر"],["rejected","مرفوض"],["","الكل"]];
+let tab = "pending", state = null, seen = new Set(), firstLoad = true;
+
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2500); }
+
+async function api(path, method = "GET") {
+  const r = await fetch(path, { method });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+
+function renderTabs() {
+  const c = state?.counts || {};
+  $("tabs").innerHTML = TABS.map(([k, label]) =>
+    `<button data-k="${k}" class="${k === tab ? "active" : ""}">${label}${k && c[k] ? ` (${c[k]})` : ""}</button>`).join(" ");
+  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { tab = b.dataset.k; renderTabs(); loadRows(); });
+}
+
+async function loadState() {
+  state = await api("/api/state");
+  const L = state.listener;
+  $("listenerPill").classList.toggle("on", L.running);
+  $("listenerText").textContent = L.running ? "شغال – بيسمع القناة" : "واقف";
+  $("listenerBtn").textContent = L.running ? "⏸ إيقاف" : "▶ تشغيل";
+  $("listenerBtn").className = L.running ? "danger" : "primary";
+  $("errorBox").style.display = L.error ? "block" : "none";
+  $("errorBox").textContent = L.error ? "⚠️ " + L.error : "";
+  $("missingBox").style.display = state.missing.length ? "block" : "none";
+  $("missingBox").textContent = state.missing.length
+    ? `⚠️ في رسايل ماوصلتش النهارده (حسب عداد "إجمالي اليوم"): ${state.missing.join("، ")}` : "";
+  $("dashBox").style.display = state.dashboard_configured ? "none" : "block";
+  $("autoMode").checked = state.auto_mode;
+  $("autoMode").disabled = !state.dashboard_configured;
+  $("approveAll").disabled = !state.dashboard_configured || !state.counts.pending;
+  const c = state.counts, total = Object.values(c).reduce((a, b) => a + b, 0);
+  $("stats").innerHTML = [["حجوزات النهارده", total], ["منتظر", c.pending || 0], ["اتحدّث", c.done || 0],
+    ["محتاج مراجعة", c.failed || 0], ["آخر رسالة", L.last_message_at ? L.last_message_at.slice(11, 16) : "—"]]
+    .map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
+  renderTabs();
+}
+
+async function loadRows() {
+  const p = new URLSearchParams();
+  if (tab) p.set("status", tab);
+  if ($("todayOnly").checked && state) p.set("day", state.today);
+  if ($("search").value.trim()) p.set("search", $("search").value.trim());
+  const rows = await api("/api/plots?" + p);
+  $("empty").hidden = rows.length > 0;
+  const canApprove = state?.dashboard_configured;
+  $("rows").innerHTML = rows.map(r => {
+    const isNew = !firstLoad && !seen.has(r.id);
+    seen.add(r.id);
+    const act = [];
+    if (r.status === "pending" || r.status === "failed") {
+      if (canApprove && r.suggest_id) act.push(`<button class="ok" data-a="link-region" title="هيفتكر إن المنطقة دي هي نفسها بعد كده">اربط وحدّث</button>`);
+      else if (canApprove) act.push(`<button class="ok" data-a="approve">حدّث الداشبورد</button>`);
+      act.push(`<button data-a="mark-done">تم يدوي</button>`);
+      act.push(`<button class="danger" data-a="reject">رفض</button>`);
+    } else {
+      act.push(`<button data-a="reset">رجّعه منتظر</button>`);
+    }
+    if (state?.dashboard_url) act.push(`<a class="link" target="_blank" href="${state.dashboard_url}?q=${encodeURIComponent(r.plot)}&per_page=500">افتح ↗</a>`);
+    return `<tr data-id="${r.id}" class="${isNew ? "new" : ""}">
+      <td>${esc(r.posted_at.slice(11, 16))}</td><td>${esc(r.day_count)}</td>
+      <td>${esc(r.city)}</td><td class="wrap">${esc(r.sector)}</td><td class="wrap">${esc(r.block)}</td>
+      <td class="plotno" title="اضغط للنسخ">${esc(r.plot)}</td>
+      <td>${r.area ? esc(r.area) + " م²" : ""}</td><td>${esc(r.features)}</td><td>${esc(r.down_payment)}</td>
+      <td><span class="status s-${r.status}">${STATUS[r.status]}</span>${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}</td>
+      <td><div class="actions">${act.join("")}</div></td></tr>`;
+  }).join("");
+  firstLoad = false;
+}
+
+$("rows").addEventListener("click", async e => {
+  const tr = e.target.closest("tr"); if (!tr) return;
+  if (e.target.classList.contains("plotno")) {
+    navigator.clipboard.writeText(e.target.textContent).then(() => toast("اتنسخ رقم القطعة " + e.target.textContent));
+    return;
+  }
+  const a = e.target.dataset.a; if (!a) return;
+  e.target.disabled = true;
+  try {
+    const r = await api(`/api/plots/${tr.dataset.id}/${a}`, "POST");
+    if (a === "approve" || a === "link-region") toast(r.status === "done" ? "✅ اتحدّثت في الداشبورد" : "⚠️ " + (r.note || "فشل"));
+  } catch (err) { toast("⚠️ " + err.message); }
+  await refresh();
+});
+
+$("listenerBtn").onclick = async () => {
+  $("listenerBtn").disabled = true;
+  try {
+    if (state.listener.running) { await api("/api/listener/stop", "POST"); toast("⏸ اتوقف"); }
+    else { const r = await api("/api/listener/start", "POST"); toast(`▶ اشتغل – جاب ${r.caught_up} رسالة فاتت`); }
+  } catch (err) { toast("⚠️ " + err.message); }
+  $("listenerBtn").disabled = false;
+  await refresh();
+};
+
+$("autoMode").onchange = async e => {
+  try { await api(`/api/auto-mode/${e.target.checked ? 1 : 0}`, "POST"); }
+  catch (err) { toast("⚠️ " + err.message); }
+  await refresh();
+};
+
+$("approveAll").onclick = async () => {
+  if (!confirm("تحدّث كل القطع المنتظرة في الداشبورد؟")) return;
+  $("approveAll").disabled = true;
+  const r = await api("/api/plots/approve-pending", "POST").catch(err => (toast("⚠️ " + err.message), null));
+  if (r) toast(`✅ ${r.done} اتحدّثت – ⚠️ ${r.failed} محتاجة مراجعة`);
+  await refresh();
+};
+
+let searchTimer;
+$("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadRows, 300); };
+$("todayOnly").onchange = loadRows;
+
+async function refresh() {
+  try { await loadState(); await loadRows(); } catch (e) { $("errorBox").style.display = "block"; $("errorBox").textContent = "⚠️ السيرفر مش شغال؟ " + e.message; }
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

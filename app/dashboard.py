@@ -1,0 +1,216 @@
+"""Talks to our Laravel dashboard as a logged-in user — no backend changes needed.
+
+- Search:  GET  /{locale}/dashboard/land_plots?q=<plot>&per_page=500   (full HTML page)
+- Reserve: POST /{locale}/dashboard/land_plots/{id}/update-status      {"status": "reserved"}  (AJAX, JSON)
+"""
+import os
+import re
+from urllib.parse import unquote
+
+import httpx
+from bs4 import BeautifulSoup
+
+from .parser import normalize
+
+
+class NotConfigured(Exception):
+    pass
+
+
+class AuthError(Exception):
+    pass
+
+
+def _env(key: str, default: str = "") -> str:
+    return os.environ.get(key, default).strip()
+
+
+def is_configured() -> bool:
+    return bool(_env("DASHBOARD_BASE_URL") and (
+        (_env("DASHBOARD_EMAIL") and _env("DASHBOARD_PASSWORD")) or _env("DASHBOARD_COOKIE")))
+
+
+def _prefix() -> str:
+    return f"/{_env('DASHBOARD_LOCALE', 'ar')}/dashboard"
+
+
+_client: httpx.AsyncClient | None = None
+_csrf: str | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if not is_configured():
+        raise NotConfigured("بيانات الدخول على الداشبورد مش متظبطة في .env")
+    if _client is None:
+        headers = {"User-Agent": "Mozilla/5.0 (baytwaten-sync)"}
+        if cookie := _env("DASHBOARD_COOKIE"):
+            headers["Cookie"] = cookie
+        _client = httpx.AsyncClient(base_url=_env("DASHBOARD_BASE_URL"), headers=headers,
+                                    follow_redirects=True, timeout=30)
+    return _client
+
+
+def _is_login_page(resp: httpx.Response) -> bool:
+    return resp.status_code in (401, 419) or "login" in resp.url.path
+
+
+def _extract_csrf(html: str) -> str | None:
+    soup = BeautifulSoup(html, "html.parser")
+    meta = soup.find("meta", attrs={"name": "csrf-token"})
+    if meta and meta.get("content"):
+        return meta["content"]
+    inp = soup.find("input", attrs={"name": "_token"})
+    return inp.get("value") if inp else None
+
+
+async def login() -> None:
+    """Log in with email/password (Laravel form login). Skipped when using a pasted cookie."""
+    global _csrf
+    email, password = _env("DASHBOARD_EMAIL"), _env("DASHBOARD_PASSWORD")
+    if not (email and password):
+        raise AuthError("الكوكي انتهت. حدّث DASHBOARD_COOKIE في .env، أو حط الإيميل والباسورد")
+    c = _get_client()
+    login_path = _env("DASHBOARD_LOGIN_PATH", "/dashboard/login")
+    page = await c.get(login_path)
+    token = _extract_csrf(page.text)
+    if not token:
+        raise AuthError(f"مش لاقي فورم تسجيل الدخول على {login_path}")
+    resp = await c.post(login_path, data={
+        "_token": token, _env("DASHBOARD_LOGIN_FIELD", "email"): email,
+        "password": password, "remember": "on",
+    })
+    if _is_login_page(resp):
+        raise AuthError("تسجيل الدخول على الداشبورد فشل. اتأكد من الإيميل والباسورد")
+    _csrf = _extract_csrf(resp.text)
+
+
+async def _request(method: str, url: str, **kw) -> httpx.Response:
+    """Send a request; if the session expired, log in again and retry once."""
+    c = _get_client()
+    resp = await c.request(method, url, **kw)
+    if _is_login_page(resp):
+        await login()
+        if "headers" in kw:
+            kw["headers"] = {**kw["headers"], **_ajax_headers()}
+        resp = await c.request(method, url, **kw)
+        if _is_login_page(resp):
+            raise AuthError("الداشبورد رافض الدخول حتى بعد تسجيل الدخول")
+    resp.raise_for_status()
+    return resp
+
+
+# ---------- search (HTML page) ----------
+
+COLUMNS = {  # normalized header text -> field
+    "#": "row_id", "رقم القطعه": "plot", "المرحله": "phase", "الموقع": "city",
+    "المنطقه": "region", "المجاوره": "neighborhood", "المساحه": "area", "الحاله": "status",
+}
+PLOT_URL = re.compile(r"land_plots/(\d+)(?:/|\b)")
+
+
+def _number(s: str) -> float | None:
+    m = re.search(r"\d+(?:\.\d+)?", s.replace(",", ""))
+    return float(m.group()) if m else None
+
+
+def _status_of(cell) -> str:
+    """The status cell is a dropdown — read the current value, not every option's text."""
+    opt = cell.select_one("option[selected]")
+    if opt:
+        return opt.get("value") or opt.get_text(" ", strip=True)
+    for el in cell.select("[data-status]"):
+        return el["data-status"]
+    btn = cell.select_one(".dropdown-toggle, button")
+    return (btn or cell).get_text(" ", strip=True)
+
+
+def classify_status(raw: str) -> str:
+    s = normalize(raw)
+    if "reserved" in s or "محجوز" in s:
+        return "reserved"
+    if "available" in s or "متاح" in s:
+        return "available"
+    return raw.strip() or "unknown"
+
+
+def parse_plots_page(html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    out = []
+    for table in soup.find_all("table"):
+        heads = [normalize(th.get_text(" ", strip=True)) for th in table.select("thead th")]
+        idx = {}
+        for i, h in enumerate(heads):  # "المساحة (م²)" -> "المساحه م²" still counts as المساحه
+            key = next((k for k in COLUMNS if h == k or h.startswith(k + " ")), None)
+            if key and COLUMNS[key] not in idx:
+                idx[COLUMNS[key]] = i
+        if "plot" not in idx:
+            continue
+        for tr in table.select("tbody tr"):
+            tds = tr.find_all("td", recursive=False)
+            if len(tds) < len(heads):
+                continue
+            cell = lambda f: tds[idx[f]] if f in idx else None  # noqa: E731
+            text = lambda f: cell(f).get_text(" ", strip=True) if cell(f) else ""  # noqa: E731
+            m = PLOT_URL.search(str(tr))
+            plot_id = m.group(1) if m else (re.sub(r"\D", "", text("row_id")) or None)
+            if not plot_id:
+                continue
+            out.append({
+                "id": plot_id, "plot": text("plot"), "phase": text("phase"), "city": text("city"),
+                "region": text("region"), "neighborhood": text("neighborhood"),
+                "area": _number(text("area")),
+                "status": classify_status(_status_of(cell("status"))) if cell("status") else "unknown",
+            })
+    return out
+
+
+async def search(plot_number: str) -> list[dict]:
+    global _csrf
+    resp = await _request("GET", f"{_prefix()}/land_plots",
+                          params={"q": plot_number, "per_page": 500})
+    _csrf = _extract_csrf(resp.text) or _csrf
+    return parse_plots_page(resp.text)
+
+
+# ---------- reserve (AJAX) ----------
+
+def _ajax_headers() -> dict:
+    h = {"Accept": "application/json", "X-Requested-With": "XMLHttpRequest",
+         "Referer": f"{_env('DASHBOARD_BASE_URL')}{_prefix()}/land_plots"}
+    if _csrf:
+        h["X-CSRF-TOKEN"] = _csrf
+    if _client and (xsrf := _client.cookies.get("XSRF-TOKEN")):
+        h["X-XSRF-TOKEN"] = unquote(xsrf)
+    return h
+
+
+async def reserve(dashboard_id) -> dict:
+    if not _csrf:
+        await search("0")  # any page load gives us the CSRF token
+    resp = await _request(_env("DASHBOARD_UPDATE_METHOD", "POST"),
+                          f"{_prefix()}/land_plots/{dashboard_id}/update-status",
+                          json={"status": "reserved"}, headers=_ajax_headers())
+    body = resp.json()
+    if not body.get("success") or (body.get("plot") or {}).get("status") != "reserved":
+        raise RuntimeError("الداشبورد مأكدتش الحجز: " + str(body.get("message") or body)[:200])
+    return body["plot"]
+
+
+# ---------- matching ----------
+
+def match(plot: dict, candidates: list[dict], region_alias: str | None = None) -> tuple[list[dict], bool]:
+    """Narrow search results down to the plot from the Telegram message.
+
+    Returns (candidates, confident). Confident = city, region and plot number all agree
+    (Telegram 🏙 = الموقع, 🏘 = المنطقة). Area breaks ties (Telegram rounds: 594 vs 594.20).
+    """
+    same = [c for c in candidates
+            if normalize(c["plot"]) == normalize(plot["plot"])
+            and normalize(c["city"]) == normalize(plot["city"])]
+    wanted = {normalize(plot["sector"]), normalize(plot.get("block"))} | ({normalize(region_alias)} if region_alias else set())
+    by_region = [c for c in same if normalize(c["region"]) in wanted - {""}]
+    pool = by_region or same
+    if len(pool) > 1 and plot.get("area"):
+        pool = [c for c in pool if c.get("area") and abs(c["area"] - plot["area"]) < 1] or pool
+    return pool, bool(by_region) and len(pool) == 1
