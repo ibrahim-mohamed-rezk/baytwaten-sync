@@ -73,7 +73,10 @@ const TABS = [["all","الكل"],["important","المهم"],["unread","مش مق
 let filter = "all", unreadOnLoad = new Set();
 
 const $ = id => document.getElementById(id);
-const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// "2026-10-28T14:19:08" -> "2:19 م" (12-hour clock, same as the panel)
+const t12 = iso => { if (!iso) return ""; const [h, m] = iso.slice(11, 16).split(":").map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "ص" : "م"}`; };
+const esc = s =>(s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2500); }
 async function api(path, method = "GET") {
   const r = await fetch(path, { method });
@@ -111,7 +114,7 @@ async function load() {
       <div class="content"><div class="title">${esc(n.title)}</div>${n.body ? `<div class="body">${esc(n.body)}</div>` : ""}
         <div class="meta"><span class="chip">${esc(KIND[n.kind] || n.kind)}</span>
           ${n.important ? `<span class="chip win" title="اتبعت لشريط إشعارات ويندوز">مهم</span>` : ""}${link}</div></div>
-      <div class="time">${esc(n.at.slice(11, 16))}</div></div>`;
+      <div class="time">${esc(t12(n.at))}</div></div>`;
   }
   $("list").innerHTML = html + (day ? "</div>" : "");
   // the page is open and visible: what's on screen counts as read (the highlight stays until reload)

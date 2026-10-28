@@ -143,7 +143,10 @@ const TABS = [["pending","منتظر"],["failed","محتاج مراجعة"],["do
 let tab = "pending", state = null, seen = new Set(), firstLoad = true;
 
 const $ = id => document.getElementById(id);
-const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// "2026-10-28T14:19:08" -> "2:19 م" (12-hour clock everywhere in the panel)
+const t12 = iso => { if (!iso) return ""; const [h, m] = iso.slice(11, 16).split(":").map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "ص" : "م"}`; };
+const esc = s =>(s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2500);
   // every toast also lands on the notifications page
@@ -184,7 +187,7 @@ async function loadState() {
     $("unparsedBox")._key = unKey;
     $("unparsedTitle").textContent = `⚠️ في ${un.length} رسالة مااتقرتش (شكلها حجز بس الشكل بتاعها مختلف). دوس عشان تشوفها`;
     $("unparsedList").innerHTML = un.map(u =>
-      `<pre class="raw"><b>#${u.msg_id} – ${esc(u.at.slice(11, 16))}</b>\n${esc(u.text)}</pre>`).join("");
+      `<pre class="raw"><b>#${u.msg_id} – ${esc(t12(u.at))}</b>\n${esc(u.text)}</pre>`).join("");
   }
   $("dashBox").style.display = state.dashboard_configured ? "none" : "block";
   $("autoMode").checked = state.auto_mode;
@@ -197,7 +200,7 @@ async function loadState() {
   $("queueText").textContent = `بيراجع مع الداشبورد… (${state.queue})`;
   const c = state.counts, total = Object.values(c).reduce((a, b) => a + b, 0);
   $("stats").innerHTML = [["حجوزات النهارده", total], ["منتظر", c.pending || 0], ["اتحدّث", c.done || 0],
-    ["محتاج مراجعة", c.failed || 0], ["آخر رسالة", L.last_message_at ? L.last_message_at.slice(11, 16) : "—"]]
+    ["محتاج مراجعة", c.failed || 0], ["آخر رسالة", L.last_message_at ? t12(L.last_message_at) : "—"]]
     .map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
   renderTabs();
 }
@@ -224,7 +227,7 @@ async function loadRows() {
     }
     if (state?.dashboard_url) act.push(`<a class="link" target="_blank" href="${state.dashboard_url}?q=${encodeURIComponent(r.plot)}&per_page=500">افتح ↗</a>`);
     return `<tr data-id="${r.id}" class="${isNew ? "new" : ""}">
-      <td>${esc(r.posted_at.slice(11, 16))}</td><td>${esc(r.day_count)}</td>
+      <td>${esc(t12(r.posted_at))}</td><td>${esc(r.day_count)}</td>
       <td>${esc(r.city)}</td><td class="wrap">${esc(r.sector)}</td><td class="wrap">${esc(r.block)}</td>
       <td class="plotno" title="اضغط للنسخ">${esc(r.plot)}</td>
       <td>${r.area ? esc(r.area) + " م²" : ""}</td><td>${esc(r.features)}</td><td>${esc(r.down_payment)}</td>
