@@ -141,6 +141,20 @@ async def test_link_region_rechecks_saved_suggestion():
     assert len(fake.POSTS) == posts, "8908 was already reserved, nothing to send"
 
 
+async def test_search_reads_every_page():
+    """q is a substring search, so a short number can exceed one page (real q=10: 655 rows > 500).
+    السادات C10 sat on page 2 and came back "not found"."""
+    use_dashboard(httpx.ASGITransport(app=fake.app))
+    old, dashboard.PER_PAGE = dashboard.PER_PAGE, 1
+    try:
+        rows = await dashboard.search("38")  # 7001 (العبور) on page 1, 7002 (السادات) on page 2
+        assert sorted(r["id"] for r in rows) == ["7001", "7002"], rows
+        tg = {"city": "السادات", "sector": "المحور المركزى", "plot": "38", "area": 500}
+        assert [c["id"] for c in dashboard.match(tg, rows)[0]] == ["7002"]
+    finally:
+        dashboard.PER_PAGE = old
+
+
 async def run():
     main.JOB_DELAY = 0
     worker = asyncio.create_task(main.worker())

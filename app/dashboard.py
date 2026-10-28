@@ -3,6 +3,7 @@
 - Search:  GET  /{locale}/dashboard/land_plots?q=<plot>&per_page=500   (full HTML page)
 - Reserve: POST /{locale}/dashboard/land_plots/{id}/update-status      {"status": "reserved"}  (AJAX, JSON)
 """
+import logging
 import os
 import re
 from urllib.parse import unquote
@@ -165,12 +166,33 @@ def parse_plots_page(html: str) -> list[dict]:
     return out
 
 
-async def search(plot_number: str) -> list[dict]:
+PER_PAGE = 500  # the dashboard accepts up to 1000; anything above silently falls back to 50
+MAX_PAGES = 20
+
+
+async def _get_page(q: str, page: int, per_page: int) -> list[dict]:
     global _csrf
-    resp = await _request("GET", f"{_prefix()}/land_plots",
-                          params={"q": plot_number, "per_page": 500})
+    resp = await _request("GET", f"{_prefix()}/land_plots", params={"q": q, "per_page": per_page, "page": page})
     _csrf = _extract_csrf(resp.text) or _csrf
     return parse_plots_page(resp.text)
+
+
+async def search(plot_number: str) -> list[dict]:
+    """All rows whose plot number contains `plot_number`, across every page.
+
+    q is a substring search over all cities, so a short number has many hits (q=10 -> 655 rows). One page
+    of 500 used to drop السادات "C10" and report it as not found.
+    """
+    out: dict[str, dict] = {}
+    for page in range(1, MAX_PAGES + 1):
+        rows = await _get_page(plot_number, page, PER_PAGE)
+        new = {r["id"]: r for r in rows if r["id"] not in out}
+        out.update(new)
+        if len(rows) < PER_PAGE or not new:
+            break
+    else:
+        logging.getLogger("dashboard").warning("search %r: stopped after %d pages", plot_number, MAX_PAGES)
+    return list(out.values())
 
 
 # ---------- reserve (AJAX) ----------
@@ -187,7 +209,7 @@ def _ajax_headers() -> dict:
 
 async def reserve(dashboard_id) -> dict:
     if not _csrf:
-        await search("0")  # any page load gives us the CSRF token
+        await _get_page("0", 1, 1)  # any page load gives us the CSRF token
     resp = await _request(_env("DASHBOARD_UPDATE_METHOD", "POST"),
                           f"{_prefix()}/land_plots/{dashboard_id}/update-status",
                           json={"status": "reserved"}, headers=_ajax_headers())

@@ -87,8 +87,12 @@ UI text is Egyptian Arabic, RTL.
   and `remember`. Verified from the live page.
 - Search is a **server-rendered page**, not JSON:
   `GET /ar/dashboard/land_plots?q=<plot>&phase_id=&zone_id=<id>&district_id=&distinction=&status=&reserved_from=&reserved_to=&per_page=500`.
-  - We send only `q` and `per_page=500`, then filter locally.
+  - We send only `q`, `per_page=500` and `page`, then filter locally.
   - `q` is a substring search across all cities: `q=163` also returns `163A` and `163-5`.
+  - **Results are paged.** A short number has many hits (`q=10` returns 655 rows). `search()` reads `page=1,2,…`
+    until a page comes back short (at most `MAX_PAGES`). Reading only page 1 made السادات `C10` and الفيوم plots
+    look "not found". `per_page` above 1000 silently falls back to 50.
+    `reserve()` loads the CSRF token with one tiny page, not a full search.
   - Table columns: # | رقم القطعة | المرحلة | الموقع (city) | المنطقة (region) | المجاورة | المساحة (م²) | … | الحالة (dropdown button) | تاريخ الحجز | الإجراءات (تعديل).
   - `parse_plots_page()` maps columns by header text. It takes the id from a `land_plots/<id>` link in the row, falling back to the # column.
 - Reserve: **POST** `/ar/dashboard/land_plots/{id}/update-status`, JSON `{"status":"reserved"}`.
