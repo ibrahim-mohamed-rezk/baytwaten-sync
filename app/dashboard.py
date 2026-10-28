@@ -199,6 +199,31 @@ async def reserve(dashboard_id) -> dict:
 
 # ---------- matching ----------
 
+# "163" | "163 5" (from "163-5") | "163a". A digit suffix needs a separator, so "1635" stays one number.
+PLOT_NO = re.compile(r"^(\d+)(?:\s*([^\W\d_]+)|\s+(\d+))?$")
+
+
+def _split_plot(s: str | None) -> tuple[str, str | None] | None:
+    m = PLOT_NO.match(normalize(s))  # no space-stripping: "163 5" must not become "1635"
+    if not m:
+        return None
+    return str(int(m.group(1))), m.group(2) or m.group(3)
+
+
+def same_plot_number(dash_plot: str, tg_plot: str, tg_block: str | None = None) -> bool:
+    """Some cities keep the neighborhood in the plot number ("163-5", "163A") while Telegram sends
+    the bare "163" and puts the neighborhood in المربع ("المجاورة 5"). The suffix must then equal the
+    block's last token; a different neighborhood never matches."""
+    a, b = _split_plot(dash_plot), _split_plot(tg_plot)
+    if not (a and b):
+        return normalize(dash_plot) == normalize(tg_plot)
+    if a[0] != b[0]:
+        return False
+    if a[1] == b[1]:
+        return True
+    block = normalize(tg_block).split()
+    return b[1] is None and bool(block) and a[1] == block[-1]
+
 def match(plot: dict, candidates: list[dict], region_alias: str | None = None) -> tuple[list[dict], bool]:
     """Narrow search results down to the plot from the Telegram message.
 
@@ -206,7 +231,7 @@ def match(plot: dict, candidates: list[dict], region_alias: str | None = None) -
     (Telegram 🏙 = الموقع, 🏘 = المنطقة). Area breaks ties (Telegram rounds: 594 vs 594.20).
     """
     same = [c for c in candidates
-            if normalize(c["plot"]) == normalize(plot["plot"])
+            if same_plot_number(c["plot"], plot["plot"], plot.get("block"))
             and normalize(c["city"]) == normalize(plot["city"])]
     wanted = {normalize(plot["sector"]), normalize(plot.get("block"))} | ({normalize(region_alias)} if region_alias else set())
     by_region = [c for c in same if normalize(c["region"]) in wanted - {""}]

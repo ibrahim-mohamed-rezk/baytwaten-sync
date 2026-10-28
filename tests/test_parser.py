@@ -48,6 +48,44 @@ def test_match():
     assert match(tg, rows, region_alias="ديستركت 5 جنوب")[1]
 
 
+def test_match_real_rows():
+    # real rows from the dashboard for q=163 (q is a substring search across all cities)
+    rows = [{"id": i, "plot": p, "city": c, "region": r, "neighborhood": n, "area": a, "status": "available"}
+            for i, p, c, r, n, a in [
+                (23000, "163", "العبور الجديدة", "الحى 24 -منطقة TJ", "—", 469.1),
+                (21690, "163A", "اسيوط الجديدة", "التوسعات الشمالية المجاورة الرابعة الحى الخامس", "المجاورة A", 456.0),
+                (17854, "163-5", "السادات", "الحى المتميز", "المجاورة ٥", 630.0),
+                (17432, "163-2", "السادات", "الحى المتميز", "المجاورة ٢", 630.0),
+                (9414, "163", "القاهره الجديدة", "الامتداد الجنوبى بالقرب من ديستركت 5", "—", 594.2),
+                (1251, "163", "القاهره الجديدة", "الحى الرابع منطقة بيت وطن Q", "—", 437.5),
+            ]]
+    cases = [
+        ("العبور الجديدة", "الحى 24 -منطقة TJ", "المنطقة TJ", 469, 23000),
+        ("أسيوط الجديدة", "التوسعات الشمالية المجاورة الرابعة الحى الخامس", "منطقة A", 456, 21690),
+        ("السادات", "الحى المتميز", "المجاورة 5", 630, 17854),
+        ("السادات", "الحى المتميز", "المجاورة 2", 630, 17432),
+        ("القاهرة الجديدة", "الامتداد الجنوبى بالقرب من ديستركت 5", "الامتداد الجنوبى بالقرب من ديستركت 5", 594, 9414),
+    ]
+    for city, sector, block, area, want in cases:
+        tg = {"city": city, "sector": sector, "block": block, "plot": "163", "area": area}
+        pool, confident = match(tg, rows)
+        assert [c["id"] for c in pool] == [want] and confident, (block, pool)
+    # a neighborhood that doesn't exist never falls back to another one
+    tg = {"city": "السادات", "sector": "الحى المتميز", "block": "المجاورة 3", "plot": "163", "area": 630}
+    assert match(tg, rows)[0] == []
+
+
+def test_same_plot_number():
+    from app.dashboard import same_plot_number
+    assert same_plot_number("163-5", "163", "المجاورة 5")
+    assert not same_plot_number("163-5", "163", "المجاورة 3")
+    assert same_plot_number("163A", "163", "منطقة A")
+    assert same_plot_number("0163", "163")
+    assert same_plot_number("163-5", "163-5")
+    assert not same_plot_number("1635", "163", "المجاورة 5")
+    assert not same_plot_number("163-5", "163-2", "المجاورة 5")
+
+
 def test_dashboard_page():
     from app.dashboard import parse_plots_page
     html = """<table><thead><tr><th></th><th>#</th><th>رقم<br>القطعة</th><th>الموقع</th><th>المنطقة</th>

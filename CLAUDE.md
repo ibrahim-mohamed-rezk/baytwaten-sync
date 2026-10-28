@@ -45,12 +45,17 @@ UI text is Egyptian Arabic, RTL.
 - Search is a **server-rendered page**, not JSON:
   `GET /ar/dashboard/land_plots?q=<plot>&phase_id=&zone_id=<id>&district_id=&distinction=&status=&reserved_from=&reserved_to=&per_page=500`.
   - We send only `q` and `per_page=500`, then filter locally.
+  - `q` is a substring search across all cities: `q=163` also returns `163A` and `163-5`.
   - Table columns: # | رقم القطعة | المرحلة | الموقع (city) | المنطقة (region) | المجاورة | المساحة (م²) | … | الحالة (dropdown button) | تاريخ الحجز | الإجراءات (تعديل).
   - `parse_plots_page()` maps columns by header text. It takes the id from a `land_plots/<id>` link in the row, falling back to the # column.
 - Reserve: **POST** `/ar/dashboard/land_plots/{id}/update-status`, JSON `{"status":"reserved"}`.
   - Needs the session cookie plus an `X-CSRF-TOKEN` header (taken from `<meta name="csrf-token">` on any page).
   - Response: `{success:true, message:"تم التحديث بنجاح", plot:{id, plot_number, area, status:"reserved", land_zone_id, ...}}`.
 - Matching: Telegram 🏙 = الموقع, 🏘 = المنطقة. Areas are rounded in Telegram (594 vs 594.20), so the tolerance is < 1 m².
+  - Some cities keep the neighborhood in the plot number (السادات `163-5`, أسيوط الجديدة `163A`), while Telegram
+    sends the bare `163` and puts the neighborhood in المربع (`المجاورة 5`). `same_plot_number()` splits a number
+    into (base, suffix) and matches when the bases agree and either the suffixes are equal or Telegram has none and
+    the dashboard suffix equals the block's last token. A different neighborhood never matches.
   - If the city and number match but the region name differs, the plot becomes `failed` with `suggest_id`.
   - The "اربط وحدّث" button stores a `region_aliases` row and reserves the plot.
 
@@ -59,9 +64,11 @@ Done and tested locally: the parser on real messages, the panel UI, dedupe and g
 against `tests/fake_dashboard.py` (auto re-login on expired session, CSRF, confident match, region alias, not found,
 already reserved).
 
+`check_dashboard.py 163` verified against the real dashboard: login and table parsing work. Its rows exposed the
+neighborhood-in-plot-number case, now covered by `test_match_real_rows`.
+
 **Not yet verified against the real systems:**
-1. `check_dashboard.py 163` against the real dashboard. The real HTML may differ from the mock:
-   header texts, how the status dropdown renders, where the id lives. If it parses nothing, use `debug_page.html` to fix `parse_plots_page`.
+1. A real reserve POST from the panel.
 2. The real Telethon connection to the private channel (`login.py`, then ▶ in the panel).
 
 Next ideas, only if the user asks:
