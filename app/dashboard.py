@@ -199,15 +199,16 @@ async def reserve(dashboard_id) -> dict:
 
 # ---------- matching ----------
 
-# "163" | "163 5" (from "163-5") | "163a". A digit suffix needs a separator, so "1635" stays one number.
-PLOT_NO = re.compile(r"^(\d+)(?:\s*([^\W\d_]+)|\s+(\d+))?$")
+# "163" | "163 5" (from "163-5") | "163a" | "ca23" (letters first, العاشر من رمضان).
+# A digit suffix needs a separator, so "1635" stays one number. Letters on both sides don't parse.
+PLOT_NO = re.compile(r"^(?:([^\W\d_]+)\s*)?(\d+)(?:\s*([^\W\d_]+)|\s+(\d+))?$")
 
 
 def _split_plot(s: str | None) -> tuple[str, str | None] | None:
     m = PLOT_NO.match(normalize(s))  # no space-stripping: "163 5" must not become "1635"
-    if not m:
+    if not m or (m.group(1) and (m.group(3) or m.group(4))):
         return None
-    return str(int(m.group(1))), m.group(2) or m.group(3)
+    return str(int(m.group(2))), m.group(1) or m.group(3) or m.group(4)
 
 
 def same_plot_number(dash_plot: str, tg_plot: str, tg_block: str | None = None) -> bool:
@@ -229,11 +230,16 @@ def match(plot: dict, candidates: list[dict], region_alias: str | None = None) -
 
     Returns (candidates, confident). Confident = city, region and plot number all agree
     (Telegram 🏙 = الموقع, 🏘 = المنطقة). Area breaks ties (Telegram rounds: 594 vs 594.20).
+    The region may also equal the block's part before " - ": 🏘 "المحور المركزى" with block
+    "المحور المركزى الثانى - منطقة D" is the dashboard's "المحور المركزى الثانى". Exact match only, no prefix guessing.
     """
     same = [c for c in candidates
             if same_plot_number(c["plot"], plot["plot"], plot.get("block"))
             and normalize(c["city"]) == normalize(plot["city"])]
-    wanted = {normalize(plot["sector"]), normalize(plot.get("block"))} | ({normalize(region_alias)} if region_alias else set())
+    block = plot.get("block") or ""
+    wanted = {normalize(plot["sector"]), normalize(block), normalize(re.split(r"\s+[-–]\s+", block)[0])}
+    if region_alias:
+        wanted.add(normalize(region_alias))
     by_region = [c for c in same if normalize(c["region"]) in wanted - {""}]
     pool = by_region or same
     if len(pool) > 1 and plot.get("area"):

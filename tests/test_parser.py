@@ -95,6 +95,46 @@ def test_same_plot_number():
     assert same_plot_number("163-5", "163-5")
     assert not same_plot_number("1635", "163", "المجاورة 5")
     assert not same_plot_number("163-5", "163-2", "المجاورة 5")
+    # العاشر من رمضان puts the neighborhood first: "CA23"
+    assert same_plot_number("CA23", "23", "منطقة المال و الاعمال - منطقة CA")
+    assert not same_plot_number("CB23", "23", "منطقة المال و الاعمال - منطقة CA")
+    assert not same_plot_number("CA123", "23", "منطقة CA")
+    assert same_plot_number("ca-23", "CA23")
+
+
+def test_match_prefix_rows():
+    """Real rows for q=23 in العاشر من رمضان (2026-10-28). Telegram: plot 23, block "... منطقة CA", 500 m²."""
+    region = "منطقة المال و الاعمال (عمارات)"
+    rows = [{"id": i, "plot": p, "city": "العاشر من رمضان", "region": region, "neighborhood": n, "area": a,
+             "status": "available"} for i, p, n, a in [
+        (21313, "123CC", "المجاورة CC", 438.7), (21358, "23CD", "المجاورة CD", 562.6),
+        (21405, "23CE", "المجاورة CE", 500.0), (21213, "23CC", "المجاورة CC", 556.2),
+        (3488, "CB23", "المجاورة CB", 483.4), (3420, "CA23", "المجاورة CA", 500.0)]]
+    tg = {"city": "العاشر من رمضان", "sector": "منطقة المال و الاعمال(عمارات)",
+          "block": "منطقة المال و الاعمال - منطقة CA", "plot": "23", "area": 500}
+    pool, confident = match(tg, rows)
+    assert [c["id"] for c in pool] == [3420] and confident, pool
+    tg["block"] = "منطقة المال و الاعمال - منطقة CF"
+    assert match(tg, rows)[0] == []
+
+
+def test_match_region_from_block():
+    """Real السادات rows (2026-10-28): 🏘 says "المحور المركزى" but the dashboard region is the block's
+    part before " - "."""
+    region = "المحور المركزى الثانى"
+    rows = [{"id": i, "plot": p, "city": "السادات", "region": r, "neighborhood": "", "area": a, "status": s}
+            for i, p, r, a, s in [
+                (4834, "E29", region, 500.0, "available"), (4675, "D29", region, 500.0, "reserved"),
+                (4588, "C29", region, 500.0, "available"), (4490, "B29", region, 510.0, "reserved"),
+                (21057, "29-4", "الحى الرابع - حى الزهور", 600.3, "available")]]
+    tg = {"city": "السادات", "sector": "المحور المركزى", "block": "المحور المركزى الثانى - منطقة D",
+          "plot": "29", "area": 500}
+    pool, confident = match(tg, rows)
+    assert [c["id"] for c in pool] == [4675] and confident, pool
+    # a block whose first part is NOT the region stays unsure (suggestion only)
+    tg["block"] = "المحور المركزى - منطقة D"
+    pool, confident = match(tg, rows)
+    assert [c["id"] for c in pool] == [4675] and not confident, pool
 
 
 def test_dashboard_page():
