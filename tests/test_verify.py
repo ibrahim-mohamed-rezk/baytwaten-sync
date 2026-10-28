@@ -97,6 +97,7 @@ async def test_verify_pending_endpoint():
     main._search_cache.clear()
     r = await main.verify_pending()
     assert r["done"] == 1 and r["checked"] >= 1, r
+    assert main._batch == {"total": r["checked"], "checked": r["checked"], "done": 1}, main._batch
     assert row(p)["status"] == "done" and fake.POSTS == []
 
 

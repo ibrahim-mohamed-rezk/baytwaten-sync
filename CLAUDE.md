@@ -42,7 +42,9 @@ UI text is Egyptian Arabic, RTL.
     `SEARCH_TTL` (60s) in queued jobs; manual approve always searches fresh. A plot is queued once at a time.
   - Every `RECHECK_EVERY` (5 min) all still-pending rows are queued for `verify()`, to catch plots reserved by
     hand in the dashboard after the message arrived. `POST /api/plots/verify-pending` (panel button
-    "🔄 راجع مع الداشبورد") does the same and waits, returning `{checked, done}`.
+    "🔄 راجع مع الداشبورد") does the same and waits, returning `{checked, done}`. Only one such run at a time (409 otherwise).
+    Its live progress is in `/api/state.verify_batch` (`{total, checked, done}`), which the panel polls every 0.5s
+    to drive a progress-bar popup.
     `/api/state.queue` drives the header pill "بيراجع مع الداشبورد… (N)".
 - `app/static/index.html`: the panel. Vanilla JS, polls `/api/state` and `/api/plots` every 5s.
 - `check_dashboard.py`: read-only connection check (login + search, prints parsed rows, dumps `debug_page.html` if nothing parsed).
@@ -85,7 +87,7 @@ neighborhood-in-plot-number case, now covered by `test_match_real_rows`.
 
 A real reserve POST from the panel works, and ▶ catches up on the real channel over Telethon.
 Catch-up exposed that most of the day's plots were already reserved by hand, which led to the read-only `verify()` flow.
-That flow is tested against the fake dashboard only; it hasn't run against the real dashboard yet.
+That flow also works against the real dashboard: its first 5-minute recheck marked 47 plots done, with no `verify_error`.
 
 Next ideas, only if the user asks:
 - Use `zone_id` in the search instead of local filtering.

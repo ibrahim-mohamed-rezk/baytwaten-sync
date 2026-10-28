@@ -54,6 +54,18 @@
   #toast { position:fixed; bottom:20px; left:20px; background:var(--text); color:#fff; padding:10px 16px;
            border-radius:8px; opacity:0; transition:.2s; pointer-events:none; }
   #toast.show { opacity:1; }
+  .modal { position:fixed; inset:0; background:#1d243366; display:flex; align-items:center; justify-content:center;
+           z-index:10; padding:16px; }
+  .modal[hidden] { display:none; }
+  .modal .box { background:var(--card); border-radius:12px; padding:20px 22px; width:min(420px, 100%);
+                box-shadow:0 10px 40px #0003; }
+  .modal h2 { font-size:17px; margin:0 0 6px; }
+  .modal p { color:var(--muted); font-size:14px; margin:0 0 14px; }
+  .bar { height:12px; background:#eef0f5; border-radius:999px; overflow:hidden; }
+  .bar div { height:100%; width:0; background:var(--blue); transition:width .3s; }
+  .bar.finished div { background:var(--green); }
+  .progress-nums { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); margin:8px 0 14px; }
+  .modal .foot { display:flex; justify-content:flex-start; }
 </style>
 </head>
 <body>
@@ -94,6 +106,15 @@
   </div>
 </main>
 <div id="toast"></div>
+<div id="verifyModal" class="modal" hidden>
+  <div class="box">
+    <h2>🔄 مراجعة مع الداشبورد</h2>
+    <p id="verifyMsg">بيشوف القطع المنتظرة لو كانت اتحجزت في الداشبورد خلاص. مش بيغيّر حاجة في الداشبورد.</p>
+    <div class="bar" id="verifyBar"><div></div></div>
+    <div class="progress-nums"><span id="verifyCount">0 / 0</span><span id="verifyDone">اتعلّم "اتحدّث": 0</span></div>
+    <div class="foot"><button id="verifyClose" disabled>قفل</button></div>
+  </div>
+</div>
 
 <script>
 const STATUS = { pending:"منتظر", done:"اتحدّث", failed:"محتاج مراجعة", rejected:"مرفوض", duplicate:"مكرر" };
@@ -215,15 +236,41 @@ $("approveAll").onclick = async () => {
   await refresh();
 };
 
+function showProgress(b, finished) {
+  const pct = b.total ? Math.round(100 * b.checked / b.total) : 100;
+  $("verifyBar").firstElementChild.style.width = pct + "%";
+  $("verifyBar").classList.toggle("finished", finished);
+  $("verifyCount").textContent = `${b.checked} / ${b.total} (${pct}%)`;
+  $("verifyDone").textContent = `اتعلّم "اتحدّث": ${b.done}`;
+}
+
 $("verifyAll").onclick = async () => {
   const b = $("verifyAll");
   b.disabled = b._busy = true;
-  toast("🔄 بيراجع القطع المنتظرة مع الداشبورد…");
-  const r = await api("/api/plots/verify-pending", "POST").catch(err => (toast("⚠️ " + err.message), null));
-  if (r) toast(`✅ ${r.done} من ${r.checked} كانت محجوزة في الداشبورد واتعلّمت "اتحدّث"`);
-  b._busy = false; b.disabled = !state?.dashboard_configured;
-  await refresh();
+  $("verifyClose").disabled = true;
+  $("verifyMsg").textContent = "بيشوف القطع المنتظرة لو كانت اتحجزت في الداشبورد خلاص. مش بيغيّر حاجة في الداشبورد.";
+  showProgress({ total: 0, checked: 0, done: 0 }, false);
+  $("verifyModal").hidden = false;
+  const poll = setInterval(async () => {
+    const s = await api("/api/state").catch(() => null);
+    if (s?.verify_batch) showProgress(s.verify_batch, false);
+  }, 500);
+  try {
+    const r = await api("/api/plots/verify-pending", "POST");
+    showProgress({ total: r.checked, checked: r.checked, done: r.done }, true);
+    $("verifyMsg").textContent = r.checked
+      ? `✅ خلص. ${r.done} من ${r.checked} كانت محجوزة في الداشبورد واتعلّمت "اتحدّث".`
+      : "مفيش قطع منتظرة.";
+  } catch (err) {
+    $("verifyMsg").textContent = "⚠️ " + err.message;
+  } finally {
+    clearInterval(poll);
+    $("verifyClose").disabled = false;
+    b._busy = false; b.disabled = !state?.dashboard_configured;
+    await refresh();
+  }
 };
+$("verifyClose").onclick = () => { $("verifyModal").hidden = true; };
 
 let searchTimer;
 $("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadRows, 300); };

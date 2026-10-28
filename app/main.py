@@ -132,6 +132,7 @@ async def verify(plot_id: int) -> dict | None:
 
 _jobs: asyncio.Queue = asyncio.Queue()
 _queued: dict[int, asyncio.Future] = {}  # plot id -> resolved when its job finishes
+_batch: dict | None = None  # progress of the last "verify pending" run, for the panel's progress bar
 
 
 def enqueue(plot_id: int, kind: str = "verify") -> asyncio.Future:
@@ -214,6 +215,7 @@ def state():
                      "last_message_at": listener.last_message_at},
         "auto_mode": db.get_setting("auto_mode") == "1",
         "queue": len(_queued),
+        "verify_batch": _batch,
         "dashboard_configured": dashboard.is_configured(),
         "dashboard_url": os.environ.get("DASHBOARD_BASE_URL", "").rstrip("/")
                          + f"/{os.environ.get('DASHBOARD_LOCALE', 'ar')}/dashboard/land_plots",
@@ -265,10 +267,20 @@ async def verify_pending():
     """Read-only re-check of every pending row. Waits for the queue so it can report the count."""
     if not dashboard.is_configured():
         raise HTTPException(409, "لازم الربط مع الداشبورد يكون جاهز الأول")
-    ids = [r["id"] for r in db.q("SELECT id FROM plots WHERE status='pending'")]
-    await asyncio.gather(*enqueue_pending())
-    done = sum(_get_plot(i)["status"] == "done" for i in ids)
-    return {"checked": len(ids), "done": done}
+    global _batch
+    if _batch and _batch["checked"] < _batch["total"]:
+        raise HTTPException(409, "في مراجعة شغالة دلوقتي")
+    ids = [r["id"] for r in db.q("SELECT id FROM plots WHERE status='pending' ORDER BY msg_id")]
+    futs = [enqueue(i) for i in ids]
+    batch = _batch = {"total": len(futs), "checked": 0, "done": 0}
+
+    def tick(_, plot_id):
+        batch["checked"] += 1
+        batch["done"] += _get_plot(plot_id)["status"] == "done"
+    for plot_id, fut in zip(ids, futs):
+        fut.add_done_callback(lambda f, i=plot_id: tick(f, i))
+    await asyncio.gather(*futs)
+    return {"checked": batch["total"], "done": batch["done"]}
 
 
 @app.post("/api/plots/{plot_id}/mark-done")
