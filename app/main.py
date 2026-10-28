@@ -68,6 +68,18 @@ async def find_target(plot: dict, force_id: str | None = None,
     return pool[0], True, None, None
 
 
+def _mark_unsure(plot: dict, c: dict) -> None:
+    """'failed' with a suggestion; the note says what differs so the user can judge before "اربط وحدّث"."""
+    why = []
+    if not dashboard.area_matches(c, plot):
+        why.append(f"المساحة في الداشبورد {c['area']}م² وفي التليجرام {plot['area']:g}م²")
+    if normalize(c["region"]) != normalize(plot["sector"]):
+        why.append(f"المنطقة في الداشبورد اسمها \"{c['region']}\" ({c['area']}م²)")
+    db.update_plot(plot["id"], status="failed", suggest_id=c["id"], suggest_region=c["region"],
+                   note=f"القطعة #{c['id']} ({c['plot']}): " + "، و".join(why)
+                        + ". لو هي نفس القطعة اضغط \"اربط وحدّث\"")
+
+
 async def approve(plot_id: int, by: str = "manual", force_id: str | None = None,
                   cached: bool = False) -> dict:
     """Find the plot in the dashboard and mark it reserved.
@@ -81,14 +93,7 @@ async def approve(plot_id: int, by: str = "manual", force_id: str | None = None,
     try:
         target, _, c, reason = await find_target(plot, force_id, cached)
         if c:
-            why = []
-            if not dashboard.area_matches(c, plot):
-                why.append(f"المساحة في الداشبورد {c['area']}م² وفي التليجرام {plot['area']:g}م²")
-            if normalize(c["region"]) != normalize(plot["sector"]):
-                why.append(f"المنطقة في الداشبورد اسمها \"{c['region']}\" ({c['area']}م²)")
-            db.update_plot(plot_id, status="failed", suggest_id=c["id"], suggest_region=c["region"],
-                           note=f"القطعة #{c['id']} ({c['plot']}): " + "، و".join(why)
-                                + ". لو هي نفس القطعة اضغط \"اربط وحدّث\"")
+            _mark_unsure(plot, c)
             db.log("approve_unsure", plot_id, f"{by}: suggest #{c['id']}")
             return _get_plot(plot_id)
         if not target:
@@ -252,13 +257,35 @@ async def approve_one(plot_id: int):
 
 @app.post("/api/plots/{plot_id}/link-region")
 async def link_region(plot_id: int):
-    """Accept the suggested dashboard region for this Telegram region (remembered for next time)."""
+    """Accept the suggested dashboard plot (and its region name, remembered for next time).
+
+    The suggestion was saved when the row was last matched. Matching may have improved since, so look again
+    first: if today's suggestion differs, show it and act on nothing.
+    """
     plot = _get_plot(plot_id)
     if not plot["suggest_id"]:
         raise HTTPException(400, "مفيش اقتراح للقطعة دي")
-    db.set_region_alias(plot["city"], plot["sector"], plot["suggest_region"])
-    db.log("link_region", plot_id, f"{plot['sector']} -> {plot['suggest_region']}")
-    return await approve(plot_id, force_id=plot["suggest_id"])
+    try:
+        target, _, c, reason = await find_target(plot)
+    except dashboard.NotConfigured as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"مش قادر أوصل للداشبورد: {e}")
+    if not c or c["id"] != plot["suggest_id"]:
+        if c:
+            _mark_unsure(plot, c)
+        elif target:
+            db.update_plot(plot_id, suggest_id=None, suggest_region=None,
+                           note=f"دلوقتي فيه قطعة مطابقة أكيدة #{target['id']} ({target['plot']}). اضغط \"حدّث الداشبورد\"")
+        else:
+            db.update_plot(plot_id, suggest_id=None, suggest_region=None, note=reason)
+        db.log("link_region_stale", plot_id,
+               f"saved #{plot['suggest_id']}, now #{(c or target or {}).get('id')}")
+        raise HTTPException(409, "الاقتراح اتغيّر بعد تحديث المطابقة. راجع القطعة تاني قبل ما تربط")
+    if normalize(c["region"]) != normalize(plot["sector"]):  # area-only differences teach no alias
+        db.set_region_alias(plot["city"], plot["sector"], c["region"])
+        db.log("link_region", plot_id, f"{plot['sector']} -> {c['region']}")
+    return await approve(plot_id, force_id=c["id"])
 
 
 @app.post("/api/plots/approve-pending")

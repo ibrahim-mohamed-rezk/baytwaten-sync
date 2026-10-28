@@ -112,6 +112,11 @@ UI text is Egyptian Arabic, RTL.
     These are exact (normalized) comparisons, never prefix guessing.
   - If the city and number match but the region name differs, the plot becomes `failed` with `suggest_id`.
   - The "اربط وحدّث" button stores a `region_aliases` row and reserves the plot.
+    - It re-runs the match first. A saved suggestion can be stale after a matching fix (e.g. the TJ plot
+      saved for "( T I)"). If today's suggestion differs, it updates the row, logs `link_region_stale`,
+      returns 409 and acts on nothing.
+    - It only stores an alias when the region name actually differs. An area-only difference teaches no alias.
+    - Failed rows aren't re-matched automatically, so their notes can be outdated until approved or linked again.
 
 ## Status (2026-10-28)
 Done and tested locally: the parser on real messages, the panel UI, dedupe and gap detection, and the whole approve flow

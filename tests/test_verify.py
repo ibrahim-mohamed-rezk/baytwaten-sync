@@ -117,6 +117,30 @@ async def test_approve_unchanged():
     assert "8909" not in fake.POSTS and fake.PLOTS["8909"]["status"] == "available"
 
 
+async def test_link_region_rechecks_saved_suggestion():
+    from fastapi import HTTPException
+    use_dashboard(httpx.ASGITransport(app=fake.app))
+    posts = len(fake.POSTS)
+    # a suggestion saved by older matching rules: plot 777 now points at 8909, not 8908
+    p = db.q("SELECT id FROM plots WHERE plot='777'")[0]["id"]
+    db.update_plot(p, suggest_id="8908", suggest_region="الحى 24 -منطقة TJ", note="old")
+    try:
+        await main.link_region(p)
+        raise AssertionError("a stale suggestion must not be acted on")
+    except HTTPException as e:
+        assert e.status_code == 409
+    r = row(p)
+    assert (r["status"], r["suggest_id"]) == ("failed", "8909") and "المساحة" in r["note"], r
+    assert len(fake.POSTS) == posts and not db.q("SELECT 1 FROM region_aliases")
+
+    # a current suggestion still links: plot 612, region named differently -> alias learned, row done
+    m = db.q("SELECT id FROM plots WHERE plot='612'")[0]["id"]
+    r = await main.link_region(m)
+    assert (r["status"], r["dashboard_id"]) == ("done", "8908"), r
+    assert db.get_region_alias("العبور الجديدة", "الحى العاشر") == "الحى 24 -منطقة TJ"
+    assert len(fake.POSTS) == posts, "8908 was already reserved, nothing to send"
+
+
 async def run():
     main.JOB_DELAY = 0
     worker = asyncio.create_task(main.worker())
