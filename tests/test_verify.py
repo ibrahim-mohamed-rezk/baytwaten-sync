@@ -22,6 +22,7 @@ import httpx  # noqa: E402
 from app import dashboard, db, main  # noqa: E402
 from app.parser import plot_key  # noqa: E402
 from tests import fake_dashboard as fake  # noqa: E402
+db.set_setting("win_notify", 0)  # important events would otherwise pop real Windows notifications
 
 AUTO_NOTE = "كانت محجوزة في الداشبورد (اتشافت تلقائي)"
 _msg_ids = itertools.count(1)

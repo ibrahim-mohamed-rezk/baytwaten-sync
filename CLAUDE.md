@@ -67,6 +67,20 @@ UI text is Egyptian Arabic, RTL.
     Its live progress is in `/api/state.verify_batch` (`{total, checked, done}`), which the panel polls every 0.5s
     to drive a progress-bar popup.
     `/api/state.queue` drives the header pill "بيراجع مع الداشبورد… (N)".
+- `app/notify.py`: notifications.
+  - `notify(kind, title, body, level, plot_id, important, throttle)` stores a row in `notifications`.
+  - `important=True` also shows a Windows toast via PowerShell's WinRT API. It goes through `-EncodedCommand`
+    (UTF-16) so Arabic survives, uses PowerShell's app id, and needs no dependency. Clicking it opens `/notifications`.
+  - The user wants Windows popups **only for the important things**; everything else is listed on the page.
+    - Important: auto-mode reservations, review/failed rows from auto or background jobs, unparsed messages,
+      gaps still missing after a resync (once per counter per day, kept in settings `gap_notified`),
+      channel edits to rows already handled, and errors (dashboard down, channel unreadable). Errors are throttled to one per 10 min.
+    - Page only: new plots, auto-verified, manual reservations, recoveries, listener start/stop, settings, panel toasts.
+  - Setting `win_notify` (default on) is toggled on the page.
+  - `/api/notifications` (filter all/important/unread), `/read?up_to=`, `/panel` (the panel's toasts), `/windows/{on}`, `/test`.
+- `app/static/notifications.html`: the notifications page at `/notifications`. Grouped by day, with filters, auto-refresh,
+  and "افتح القطعة" links (`/?q=<plot>`). What's shown while the page is visible counts as read. The panel header bell
+  shows unread important ones.
 - `app/static/index.html`: the panel. Vanilla JS, polls `/api/state` and `/api/plots` every 5s.
 - `check_dashboard.py`: read-only connection check (login + search, prints parsed rows, dumps `debug_page.html` if nothing parsed).
 - `scripts/find_message.py N`: read-only. Finds today's channel message with daily counter N and says which
@@ -147,6 +161,7 @@ python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python -m tests.test_parser
 .venv\Scripts\python -m tests.test_verify
 .venv\Scripts\python -m tests.test_listener
+.venv\Scripts\python -m tests.test_notify
 .venv\Scripts\python -m uvicorn tests.fake_dashboard:app --port 9900          # mock dashboard
 .venv\Scripts\python -m tests.seed_fake_messages                             # fake channel messages
 .venv\Scripts\python run.py                                                  # panel on :8800

@@ -34,6 +34,17 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS region_aliases (
     tg_key TEXT PRIMARY KEY, dash_region TEXT NOT NULL, created_at TEXT NOT NULL
 );
+-- everything shown to the user: platform events and panel toasts. important=1 also pops a Windows notification
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL,               -- new_plot | reserved | review | error | gap | unparsed | panel | ...
+    level TEXT NOT NULL,              -- info | success | warning | error
+    title TEXT NOT NULL, body TEXT, plot_id INTEGER,
+    important INTEGER NOT NULL DEFAULT 0,
+    read INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS notifications_read ON notifications(read, important);
 CREATE TABLE IF NOT EXISTS log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL, plot_id INTEGER, action TEXT NOT NULL, detail TEXT
@@ -110,10 +121,12 @@ def insert_plot(msg_id: int, posted_at: str, r: dict, key: str, raw: str) -> int
         return cur.lastrowid if cur.rowcount else None
 
 
-def log_unparsed(msg_id: int, text: str) -> None:
-    """A message that looks like a reservation but didn't parse. Logged once per message."""
-    if not q("SELECT 1 FROM log WHERE action='unparsed' AND detail LIKE ?", (f"msg {msg_id}:%",)):
-        log("unparsed", detail=f"msg {msg_id}: {text[:200]}")
+def log_unparsed(msg_id: int, text: str) -> bool:
+    """A message that looks like a reservation but didn't parse. Logged once per message; True if new."""
+    if q("SELECT 1 FROM log WHERE action='unparsed' AND detail LIKE ?", (f"msg {msg_id}:%",)):
+        return False
+    log("unparsed", detail=f"msg {msg_id}: {text[:200]}")
+    return True
 
 
 def unparsed_today(day: str) -> list[dict]:

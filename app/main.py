@@ -12,13 +12,19 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
 
 from . import dashboard, db  # noqa: E402
+from .notify import notify, show_windows_toast, unread_important, windows_enabled  # noqa: E402
 from .listener import Listener  # noqa: E402
 from .parser import normalize  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 STATIC = Path(__file__).resolve().parent / "static"
+
+
+def _label(plot: dict) -> str:
+    return f"{plot['city']} – رقم {plot['plot']}"
 
 
 def _get_plot(plot_id: int) -> dict:
@@ -95,6 +101,8 @@ async def approve(plot_id: int, by: str = "manual", force_id: str | None = None,
         if c:
             _mark_unsure(plot, c)
             db.log("approve_unsure", plot_id, f"{by}: suggest #{c['id']}")
+            notify("review", f"محتاجة مراجعة: {_label(plot)}", _get_plot(plot_id)["note"], level="warning",
+                   plot_id=plot_id, important=by != "manual")
             return _get_plot(plot_id)
         if not target:
             raise LookupError(reason)
@@ -110,11 +118,20 @@ async def approve(plot_id: int, by: str = "manual", force_id: str | None = None,
         db.update_plot(plot_id, status="done", dashboard_id=target["id"], note=note,
                        suggest_id=None, suggest_region=None)
         db.log("approve", plot_id, f"{by} -> dashboard #{target['id']}")
+        if note:
+            notify("done", f"كانت محجوزة في الداشبورد: {_label(plot)}", f"قطعة الداشبورد #{target['id']}",
+                   plot_id=plot_id)
+        else:
+            notify("reserved", f"{'اتحجزت تلقائي' if by == 'auto' else 'اتحجزت'} في الداشبورد: {_label(plot)}",
+                   f"قطعة الداشبورد #{target['id']} ({target['plot']})", level="success", plot_id=plot_id,
+                   important=by == "auto")
     except dashboard.NotConfigured as e:
         raise HTTPException(409, str(e))
     except Exception as e:
         db.update_plot(plot_id, status="failed", note=str(e))
         db.log("approve_failed", plot_id, f"{by}: {e}")
+        notify("review", f"مقدرتش أحدّث الداشبورد: {_label(plot)}", str(e)[:200], level="error", plot_id=plot_id,
+               important=by != "manual")
     return _get_plot(plot_id)
 
 
@@ -130,12 +147,15 @@ async def verify(plot_id: int) -> dict | None:
         target, confident, _, _ = await find_target(rows[0], cached=True)
     except Exception as e:
         db.log("verify_error", plot_id, str(e))
+        notify("error", "الداشبورد مش بيرد", str(e)[:200], level="error", important=True, throttle="dashboard")
         return rows[0]
     if (target and confident and target["status"] == "reserved"
             and _get_plot(plot_id)["status"] == "pending"):  # the user may have acted meanwhile
         db.update_plot(plot_id, status="done", dashboard_id=target["id"],
                        note="كانت محجوزة في الداشبورد (اتشافت تلقائي)")
         db.log("auto_verified", plot_id, f"dashboard #{target['id']}")
+        notify("done", f"كانت محجوزة في الداشبورد: {_label(rows[0])}", f"قطعة الداشبورد #{target['id']}",
+               plot_id=plot_id)
     return _get_plot(plot_id)
 
 
@@ -172,6 +192,8 @@ async def worker():
         except Exception as e:
             logging.exception("job for plot %s failed", plot_id)
             db.log("error", plot_id, f"job: {e}")
+            notify("error", "حصل خطأ وانا بشتغل على قطعة", str(e)[:200], level="error", plot_id=plot_id,
+                   important=True, throttle="job")
         finally:
             fut = _queued.pop(plot_id, None)
             if fut and not fut.done():
@@ -202,6 +224,7 @@ async def lifespan(app):
             await listener.start()
         except Exception as e:
             logging.error("listener didn't start: %s", e)
+            notify("error", "مقدرتش أبدأ سماع القناة", str(e)[:200], level="error", important=True)
     yield
     for t in tasks:
         t.cancel()
@@ -234,6 +257,7 @@ def state():
         "counts": counts,
         "missing": db.missing_day_counts(today),
         "unparsed": db.unparsed_today(today),
+        "notifications_unread": unread_important(),
     }
 
 
@@ -368,7 +392,57 @@ def auto_mode(on: int):
         raise HTTPException(409, "لازم الربط مع الداشبورد يكون جاهز الأول")
     db.set_setting("auto_mode", 1 if on else 0)
     db.log("auto_mode", detail=str(on))
+    notify("settings", "التحديث التلقائي اشتغل" if on else "التحديث التلقائي اتقفل")
     return {"ok": True}
+
+
+@app.get("/notifications")
+def notifications_page():
+    return FileResponse(STATIC / "notifications.html")
+
+
+@app.get("/api/notifications")
+def notifications(filter: str = "all", limit: int = 300):
+    where = {"important": "n.important=1", "unread": "n.read=0"}.get(filter, "1=1")
+    return {
+        "items": db.q(f"""SELECT n.*, p.plot AS plot_no, p.status AS plot_status FROM notifications n
+                          LEFT JOIN plots p ON p.id = n.plot_id WHERE {where} ORDER BY n.id DESC LIMIT ?""",
+                      (min(limit, 1000),)),
+        "unread": db.q("SELECT COUNT(*) n FROM notifications WHERE read=0")[0]["n"],
+        "unread_important": unread_important(),
+        "windows": windows_enabled(),
+    }
+
+
+@app.post("/api/notifications/read")
+def notifications_read(up_to: int):
+    db.x("UPDATE notifications SET read=1 WHERE id<=? AND read=0", (up_to,))
+    return {"ok": True}
+
+
+class PanelMessage(BaseModel):
+    text: str
+    level: str = "info"
+
+
+@app.post("/api/notifications/panel")
+def notifications_panel(m: PanelMessage):
+    """Toasts shown in the panel, so the notifications page has every message the user saw."""
+    notify("panel", m.text[:300], level=m.level if m.level in ("info", "success", "warning", "error") else "info")
+    return {"ok": True}
+
+
+@app.post("/api/notifications/windows/{on}")
+def notifications_windows(on: int):
+    db.set_setting("win_notify", 1 if on else 0)
+    return {"ok": True}
+
+
+@app.post("/api/notifications/test")
+async def notifications_test():
+    ok = await asyncio.to_thread(show_windows_toast, "🔔 تجربة إشعارات اللوحة", "لو شايف الرسالة دي يبقى الإشعارات شغالة")
+    notify("test", "إشعار تجربة" + (" اتبعت لويندوز" if ok else ": ويندوز رفض الإشعار"), level="success" if ok else "error")
+    return {"ok": ok}
 
 
 @app.get("/api/log")

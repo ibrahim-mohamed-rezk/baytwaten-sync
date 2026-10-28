@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>الإشعارات</title>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --text:#1d2433; --muted:#6b7385; --line:#e4e7ee;
+          --blue:#4f6af0; --green:#16a34a; --red:#dc2626; --amber:#d97706; --gray:#6b7280; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "Segoe UI", Tahoma, sans-serif; background:var(--bg); color:var(--text); }
+  header { background:var(--card); border-bottom:1px solid var(--line); padding:14px 20px;
+           display:flex; flex-wrap:wrap; gap:12px; align-items:center; position:sticky; top:0; z-index:2; }
+  h1 { font-size:18px; margin:0 0 0 auto; }
+  a.back { color:var(--blue); text-decoration:none; font-size:14px; }
+  button { font:inherit; border:1px solid var(--line); background:var(--card); border-radius:8px;
+           padding:7px 12px; cursor:pointer; }
+  button:hover { filter:brightness(.96); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px;
+          font-size:13px; background:#eef0f5; }
+  main { padding:16px 20px; max-width:900px; margin:auto; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  .tabs button.active { background:var(--text); color:#fff; border-color:var(--text); }
+  .day { color:var(--muted); font-size:13px; font-weight:600; margin:18px 4px 6px; }
+  .list { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .item { display:flex; gap:12px; padding:11px 14px; border-bottom:1px solid var(--line); align-items:flex-start; }
+  .item:last-child { border-bottom:none; }
+  .item.unread { background:#eef2ff; }
+  .icon { font-size:18px; line-height:1.3; width:22px; text-align:center; flex:none; }
+  .content { flex:1; min-width:0; }
+  .title { font-weight:600; }
+  .body { color:var(--muted); font-size:13px; margin-top:3px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .meta { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:5px; font-size:12px; color:var(--muted); }
+  .chip { padding:1px 8px; border-radius:999px; background:#eef0f5; }
+  .chip.win { background:#fef3c7; color:#92400e; }
+  .meta a { color:var(--blue); text-decoration:none; }
+  .time { flex:none; color:var(--muted); font-size:12px; padding-top:2px; }
+  .l-success .icon { color:var(--green); } .l-warning .icon { color:var(--amber); } .l-error .icon { color:var(--red); }
+  .empty { padding:40px; text-align:center; color:var(--muted); }
+  #toast { position:fixed; bottom:20px; left:20px; background:var(--text); color:#fff; padding:10px 16px;
+           border-radius:8px; opacity:0; transition:.2s; pointer-events:none; }
+  #toast.show { opacity:1; }
+  @media (max-width:600px) { header, main { padding-left:16px; padding-right:16px; } .item { flex-wrap:wrap; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔔 الإشعارات</h1>
+  <a class="back" href="/">→ ارجع للوحة</a>
+  <span class="pill" title="الإشعارات المهمة بتظهر في شريط إشعارات ويندوز حتى لو المتصفح مقفول">
+    <label><input type="checkbox" id="winToggle"> إشعارات ويندوز</label>
+  </span>
+  <button id="testBtn">جرّب إشعار</button>
+</header>
+<main>
+  <div class="toolbar">
+    <div class="tabs" id="tabs"></div>
+    <span style="flex:1"></span>
+    <span id="summary" style="color:var(--muted);font-size:13px"></span>
+  </div>
+  <div id="list"></div>
+  <div class="empty" id="empty" hidden>مفيش إشعارات هنا</div>
+</main>
+<div id="toast"></div>
+
+<script>
+const ICON = { info:"ℹ️", success:"✅", warning:"⚠️", error:"⛔" };
+const KIND = { new_plot:"قطعة جديدة", reserved:"حجز", done:"اتحدّث", review:"مراجعة", error:"خطأ", gap:"رسايل ناقصة",
+               unparsed:"مااتقرتش", recovered:"استرجاع", edit:"تعديل", listener:"القناة", settings:"إعدادات",
+               panel:"رسالة اللوحة", test:"تجربة" };
+const TABS = [["all","الكل"],["important","المهم"],["unread","مش مقروء"]];
+let filter = "all", unreadOnLoad = new Set();
+
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2500); }
+async function api(path, method = "GET") {
+  const r = await fetch(path, { method });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+
+function dayLabel(d) {
+  const today = new Date(), y = new Date(Date.now() - 864e5), iso = x => x.toLocaleDateString("en-CA");
+  return d === iso(today) ? "النهارده" : d === iso(y) ? "امبارح" : d;
+}
+
+function renderTabs(data) {
+  const n = { unread: data.unread, important: data.unread_important };
+  $("tabs").innerHTML = TABS.map(([k, label]) =>
+    `<button data-k="${k}" class="${k === filter ? "active" : ""}">${label}${n[k] ? ` (${n[k]})` : ""}</button>`).join(" ");
+  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { filter = b.dataset.k; load(); });
+}
+
+async function load() {
+  const data = await api(`/api/notifications?filter=${filter}`);
+  renderTabs(data);
+  $("winToggle").checked = data.windows;
+  $("summary").textContent = data.unread ? `${data.unread} مش مقروء` : "كله مقروء";
+  data.items.forEach(n => { if (!n.read) unreadOnLoad.add(n.id); });
+  $("empty").hidden = data.items.length > 0;
+  let day = null, html = "";
+  for (const n of data.items) {
+    const d = n.at.slice(0, 10);
+    if (d !== day) { html += (day ? "</div>" : "") + `<div class="day">${esc(dayLabel(d))}</div><div class="list">`; day = d; }
+    const link = n.plot_no ? `<a href="/?q=${encodeURIComponent(n.plot_no)}">افتح القطعة ↗</a>` : "";
+    html += `<div class="item l-${esc(n.level)} ${unreadOnLoad.has(n.id) ? "unread" : ""}">
+      <div class="icon">${ICON[n.level] || "ℹ️"}</div>
+      <div class="content"><div class="title">${esc(n.title)}</div>${n.body ? `<div class="body">${esc(n.body)}</div>` : ""}
+        <div class="meta"><span class="chip">${esc(KIND[n.kind] || n.kind)}</span>
+          ${n.important ? `<span class="chip win" title="اتبعت لشريط إشعارات ويندوز">مهم</span>` : ""}${link}</div></div>
+      <div class="time">${esc(n.at.slice(11, 16))}</div></div>`;
+  }
+  $("list").innerHTML = html + (day ? "</div>" : "");
+  // the page is open and visible: what's on screen counts as read (the highlight stays until reload)
+  const top = Math.max(0, ...data.items.map(n => n.id));
+  if (top && data.unread && document.visibilityState === "visible") await api(`/api/notifications/read?up_to=${top}`, "POST");
+}
+
+$("winToggle").onchange = async e => {
+  try { await api(`/api/notifications/windows/${e.target.checked ? 1 : 0}`, "POST"); toast(e.target.checked ? "🔔 إشعارات ويندوز اشتغلت" : "🔕 إشعارات ويندوز اتقفلت"); }
+  catch (err) { toast("⚠️ " + err.message); }
+};
+$("testBtn").onclick = async () => {
+  $("testBtn").disabled = true;
+  try { const r = await api("/api/notifications/test", "POST"); toast(r.ok ? "✅ اتبعت. بص على شريط إشعارات ويندوز" : "⚠️ ويندوز رفض الإشعار"); }
+  catch (err) { toast("⚠️ " + err.message); }
+  $("testBtn").disabled = false;
+  await load();
+};
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") load(); });
+
+load().catch(e => { $("empty").hidden = false; $("empty").textContent = "⚠️ السيرفر مش شغال؟ " + e.message; });
+setInterval(() => load().catch(() => {}), 5000);
+</script>
+</body>
+</html>

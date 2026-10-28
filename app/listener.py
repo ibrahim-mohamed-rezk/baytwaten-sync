@@ -10,6 +10,7 @@ from telethon.tl.functions.messages import CheckChatInviteRequest
 from telethon.tl.types import ChatInviteAlready
 
 from . import db
+from .notify import notify
 from .parser import parse_reservation, plot_key
 
 log = logging.getLogger("listener")
@@ -43,6 +44,16 @@ def _today_utc() -> datetime:
     return datetime.combine(datetime.now(db.TZ).date(), time.min, db.TZ).astimezone(timezone.utc)
 
 
+def _warn_once_per_day(day: str, gap: set[int]) -> set[int]:
+    """Counters in `gap` not warned about yet today (kept in settings, so a restart doesn't repeat them)."""
+    saved_day, _, saved = (db.get_setting("gap_notified", "") or "").partition(":")
+    seen = {int(n) for n in saved.split(",") if n} if saved_day == day else set()
+    new = set(gap) - seen
+    if new:
+        db.set_setting("gap_notified", f"{day}:" + ",".join(map(str, sorted(seen | new))))
+    return new
+
+
 class Listener:
     def __init__(self, on_new_plot=None):
         self.client: TelegramClient | None = None
@@ -70,8 +81,8 @@ class Listener:
             return None
         r = parse_reservation(msg.message)
         if not r:
-            if "تم حجز" in msg.message:  # looks like a reservation: never drop it silently
-                db.log_unparsed(msg.id, msg.message)
+            if "تم حجز" in msg.message and db.log_unparsed(msg.id, msg.message):  # never drop it silently
+                notify("unparsed", "رسالة حجز مااتقرتش", msg.message[:150], level="warning", important=True)
             return None
         posted = msg.date.astimezone(db.TZ).replace(tzinfo=None).isoformat(timespec="seconds")
         plot_id = db.insert_plot(msg.id, posted, r, plot_key(r), msg.message)
@@ -79,6 +90,8 @@ class Listener:
             db.set_setting("last_msg_id", msg.id)
         if plot_id:
             self.last_message_at = posted
+            notify("new_plot", f"قطعة جديدة: {r['city']} – رقم {r['plot']}",
+                   " | ".join(filter(None, (r["sector"], r["block"], r["area"] and f"{r['area']:g} م²"))), plot_id=plot_id)
             if self.on_new_plot:
                 await self.on_new_plot(plot_id)
         return plot_id
@@ -96,6 +109,8 @@ class Listener:
         row, r = rows[0], parse_reservation(msg.message or "")
         if not r:
             db.log("edit_unparsed", row["id"], f"msg {msg.id}: {(msg.message or '')[:200]}")
+            notify("edit", f"رسالة اتعدّلت ومبقتش تتقري: رقم {row['plot']}", (msg.message or "")[:150],
+                   level="warning", plot_id=row["id"], important=True)
             return "ignored"
         changes = {k: r[k] for k in EDIT_FIELDS if r[k] != row[k]}
         if not changes:
@@ -103,9 +118,12 @@ class Listener:
         detail = "; ".join(f"{k}: {row[k]} -> {v}" for k, v in changes.items())
         if row["status"] != "pending":
             db.log("edit_ignored", row["id"], f"status {row['status']}: {detail}")
+            notify("edit", f"القناة عدّلت قطعة اتعاملت معاها: {row['city']} – رقم {row['plot']}", detail,
+                   level="warning", plot_id=row["id"], important=True)
             return "kept"
         db.update_plot(row["id"], **changes, day_count=r["day_count"], plot_key=plot_key(r), raw=msg.message)
         db.log("edited", row["id"], detail)
+        notify("edit", f"القناة عدّلت رسالة: {row['city']} – رقم {row['plot']}", detail, plot_id=row["id"])
         if self.on_new_plot:
             await self.on_new_plot(row["id"])
         return "updated"
@@ -147,6 +165,7 @@ class Listener:
         await self._ensure_connected()
         added = await self._save_all(self.client.iter_messages(self.channel, reverse=True, offset_date=_today_utc()))
         db.log("refetch_today", detail=f"recovered {added}")
+        notify("recovered", f"إعادة قراية رسايل النهارده: رجعت {added} رسالة", level="success" if added else "info")
         return added
 
     async def resync(self) -> int:
@@ -158,19 +177,29 @@ class Listener:
         added = await self._save_all(recent[::-1])
         if added:
             db.log("resync_recovered", detail=f"recovered {added}")
+            notify("recovered", f"رجعت {added} رسالة كانت فايتة من القناة", level="success")
         return added
 
     async def _resync_loop(self):
         while True:
             await asyncio.sleep(TICK)
             since = monotonic() - self._last_resync
-            gap = db.missing_day_counts(datetime.now(db.TZ).date().isoformat())
+            day = datetime.now(db.TZ).date().isoformat()
+            gap = db.missing_day_counts(day)
             if since >= RESYNC_EVERY or (gap and since >= GAP_RESYNC_EVERY):
                 try:
                     await self.resync()
                 except Exception as e:
                     log.exception("resync failed")
                     db.log("error", detail=f"resync: {e}")
+                    notify("error", "مش قادر أقرا القناة", str(e)[:200], level="error", important=True,
+                           throttle="resync")
+                    continue
+                # only warn about counters a resync couldn't recover; most gaps fill themselves within a minute
+                still = set(gap) & set(db.missing_day_counts(day))
+                if new_gap := _warn_once_per_day(day, still):
+                    notify("gap", "في رسايل ناقصة من القناة", "عداد إجمالي اليوم: " + "، ".join(map(str, sorted(new_gap)))
+                           + ". جرّب \"هات الرسايل الناقصة\"", level="warning", important=True)
 
     async def start(self) -> int:
         async with self._lock:
@@ -188,6 +217,7 @@ class Listener:
                 self._last_resync = monotonic()
                 self._resync_task = asyncio.create_task(self._resync_loop())
                 db.log("listener_start", detail=f"caught up {added}")
+                notify("listener", f"بدأ يسمع القناة – جاب {added} رسالة فاتت", level="success")
                 return added
             except Exception as e:
                 self.error = str(e)
@@ -204,6 +234,7 @@ class Listener:
             self.running = False
             db.set_setting("listener_enabled", 0)
             db.log("listener_stop")
+            notify("listener", "وقف سماع القناة")
 
     async def shutdown(self):
         if self._resync_task:

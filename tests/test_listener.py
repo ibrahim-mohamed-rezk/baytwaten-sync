@@ -14,6 +14,7 @@ from app.console import utf8_console
 utf8_console()
 os.environ["SYNC_DB_PATH"] = str(Path(tempfile.mkdtemp()) / "test.sqlite3")
 from app import db, listener as L  # noqa: E402
+db.set_setting("win_notify", 0)  # important events would otherwise pop real Windows notifications
 from tests.test_parser import messages  # noqa: E402
 
 RESERVATIONS = [m for m in messages() if "تم حجز قطعة" in m]  # skips the hourly summary

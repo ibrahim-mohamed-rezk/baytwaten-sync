@@ -22,6 +22,9 @@
   .pill { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px;
           font-size:13px; background:#eef0f5; }
   .pill[hidden] { display:none; }
+  a.bell { color:var(--text); text-decoration:none; }
+  #bellCount { background:var(--red); color:#fff; border-radius:999px; padding:0 7px; font-size:12px; }
+  #bellCount[hidden] { display:none; }
   .dot { width:9px; height:9px; border-radius:50%; background:var(--gray); }
   .on .dot { background:var(--green); box-shadow:0 0 0 3px #16a34a33; }
   main { padding:16px 20px; max-width:1400px; margin:auto; }
@@ -81,6 +84,7 @@
   <span class="pill" title="تحديث الداشبورد تلقائي للقطع المطابقة 100%">
     <label><input type="checkbox" id="autoMode"> تحديث تلقائي</label>
   </span>
+  <a class="pill bell" href="/notifications" title="كل الإشعارات والرسايل">🔔 الإشعارات <b id="bellCount" hidden></b></a>
 </header>
 <main>
   <div id="errorBox" class="alert err"></div>
@@ -140,7 +144,13 @@ let tab = "pending", state = null, seen = new Set(), firstLoad = true;
 
 const $ = id => document.getElementById(id);
 const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2500); }
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2500);
+  // every toast also lands on the notifications page
+  const level = msg.startsWith("⚠️") ? "warning" : msg.startsWith("✅") ? "success" : "info";
+  fetch("/api/notifications/panel", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: msg, level }) }).catch(() => {});
+}
 
 async function api(path, method = "GET") {
   const r = await fetch(path, { method });
@@ -180,6 +190,8 @@ async function loadState() {
   $("autoMode").checked = state.auto_mode;
   $("autoMode").disabled = !state.dashboard_configured;
   $("approveAll").disabled = !state.dashboard_configured || !state.counts.pending;
+  $("bellCount").hidden = !state.notifications_unread;
+  $("bellCount").textContent = state.notifications_unread;
   if (!$("verifyAll")._busy) $("verifyAll").disabled = !state.dashboard_configured;
   $("queuePill").hidden = !state.queue;
   $("queueText").textContent = `بيراجع مع الداشبورد… (${state.queue})`;
@@ -336,6 +348,9 @@ $("todayOnly").onchange = loadRows;
 async function refresh() {
   try { await loadState(); await loadRows(); } catch (e) { $("errorBox").style.display = "block"; $("errorBox").textContent = "⚠️ السيرفر مش شغال؟ " + e.message; }
 }
+// "افتح القطعة" links from the notifications page: /?q=<plot number>
+const linkQ = new URLSearchParams(location.search).get("q");
+if (linkQ) { $("search").value = linkQ; $("todayOnly").checked = false; tab = ""; }
 refresh();
 setInterval(refresh, 5000);
 </script>
