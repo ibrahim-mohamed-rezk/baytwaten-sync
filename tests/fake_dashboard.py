@@ -3,6 +3,8 @@
 Run:  python -m uvicorn tests.fake_dashboard:app --port 9900
 Then in .env: DASHBOARD_BASE_URL=http://127.0.0.1:9900  DASHBOARD_LOGIN_PATH=/login  DASHBOARD_EMAIL=any  DASHBOARD_PASSWORD=pw
 """
+from datetime import datetime
+
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 app = FastAPI()
@@ -31,13 +33,17 @@ async def do_login(req: Request):
 def home(req: Request): return "home" if authed(req) else RedirectResponse("/login", 302)
 STATUS_AR = {"available": "متاح", "reserved": "محجوز"}
 @app.get("/ar/dashboard/land_plots", response_class=HTMLResponse)
-def plots(req: Request, q: str = "", per_page: int = 50, page: int = 1):
+def plots(req: Request, q: str = "", per_page: int = 50, page: int = 1, status: str = "",
+          reserved_from: str = "", reserved_to: str = ""):
     if not authed(req): return RedirectResponse("/login", 302)
-    hits = [(i, p) for i, p in PLOTS.items() if q in p["plot"]][(page - 1) * per_page:page * per_page]
+    day = lambda p: (p.get("at") or "")[:10]  # noqa: E731
+    hits = [(i, p) for i, p in PLOTS.items() if q in p["plot"] and (not status or p["status"] == status)
+            and (not reserved_from or day(p) >= reserved_from) and (not reserved_to or day(p) <= reserved_to)]
+    hits = hits[(page - 1) * per_page:page * per_page]
     rows = "".join(f'''<tr><td><input type=checkbox value="{i}"></td><td>{i}</td><td>{p["plot"]}</td><td><span>{p["phase"]}</span></td>
       <td>{p["city"]}</td><td>{p["region"]}</td><td>{p["nb"] or "—"}</td><td>m² {p["area"]:.2f}</td>
       <td><div class="dropdown"><button class="dropdown-toggle">{STATUS_AR[p["status"]]}</button><ul><li>متاح</li><li>محجوز</li><li>مباع</li></ul></div></td>
-      <td>—</td><td><a href="/ar/dashboard/land_plots/{i}/edit">تعديل</a></td></tr>''' for i, p in hits)
+      <td>{p.get("at") or "—"}</td><td><a href="/ar/dashboard/land_plots/{i}/edit">تعديل</a></td></tr>''' for i, p in hits)
     return f'''<html><head><meta name="csrf-token" content="{CSRF}"></head><body><table><thead><tr><th></th><th>#</th><th>رقم<br>القطعة</th><th>المرحلة</th>
       <th>الموقع</th><th>المنطقة</th><th>المجاورة</th><th>المساحة (م²)</th><th>الحالة</th><th>تاريخ الحجز</th><th>الإجراءات</th></tr></thead><tbody>{rows}</tbody></table></body></html>'''
 @app.post("/ar/dashboard/land_plots/{pid}/update-status")
@@ -46,4 +52,5 @@ async def upd(pid: str, req: Request):
     if req.headers.get("x-csrf-token") != CSRF: return JSONResponse({"message": "CSRF token mismatch."}, 419)
     POSTS.append(pid)
     PLOTS[pid]["status"] = (await req.json())["status"]
+    PLOTS[pid]["at"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")  # تاريخ الحجز, like "2026-10-28 02:03 PM"
     return {"success": True, "message": "تم التحديث بنجاح", "plot": {"id": int(pid), "status": PLOTS[pid]["status"]}}

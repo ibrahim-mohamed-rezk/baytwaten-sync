@@ -110,11 +110,10 @@ async def test_events_from_listener_and_approve():
 
 
 async def test_gap_warning_once_per_day():
-    from app.listener import _warn_once_per_day
-    assert _warn_once_per_day("2026-10-28", {67}) == {67}
-    assert _warn_once_per_day("2026-10-28", {67}) == set(), "a restart must not repeat it"
-    assert _warn_once_per_day("2026-10-28", {67, 70}) == {70}
-    assert _warn_once_per_day("2026-10-29", {67}) == {67}, "new day, new warnings"
+    assert db.new_today("gap_notified", "2026-10-28", {67}) == {"67"}
+    assert db.new_today("gap_notified", "2026-10-28", {67}) == set(), "a restart must not repeat it"
+    assert db.new_today("gap_notified", "2026-10-28", {67, 70}) == {"70"}
+    assert db.new_today("gap_notified", "2026-10-29", {67}) == {"67"}, "new day, new warnings"
 
 
 async def run():

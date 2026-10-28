@@ -12,6 +12,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from . import dashboard, db  # noqa: E402
@@ -37,6 +38,7 @@ def _get_plot(plot_id: int) -> dict:
 SEARCH_TTL = 60      # seconds a search result is reused within a batch
 JOB_DELAY = 0.3      # pause between background jobs so we don't hammer the dashboard
 RECHECK_EVERY = 300  # re-verify rows still pending (someone may reserve them by hand later)
+COMPARE_EVERY = 900  # compare today's dashboard reservations with Telegram, warn about unexplained ones
 _search_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
@@ -202,6 +204,75 @@ async def worker():
         await asyncio.sleep(JOB_DELAY)
 
 
+_last_compare: dict = {}
+
+
+async def compare_day(day: str) -> dict:
+    """READ-ONLY: the dashboard's own "reserved on `day`" list vs our Telegram rows.
+
+    Every dashboard plot lands in one bucket:
+      ok         linked to a Telegram row posted that day
+      other_day  linked to a Telegram row from another day (e.g. yesterday evening's, reserved this morning)
+      likely     not linked, but a Telegram row handled by hand (no saved link) has the same city and number
+      wrong      no Telegram message at all: reserved in the dashboard by someone else, or by mistake
+    plus not_reserved: our rows of that day still pending or in review.
+    """
+    dash = await dashboard.reserved_on(day)
+    ours = db.q("SELECT * FROM plots WHERE posted_at LIKE ? AND status NOT IN ('duplicate','rejected')", (day + "%",))
+    linked = {r["dashboard_id"]: r for r in db.q("SELECT * FROM plots WHERE dashboard_id IS NOT NULL")}
+    unlinked = db.q("SELECT * FROM plots WHERE dashboard_id IS NULL AND status NOT IN ('duplicate','rejected')")
+    out = {"day": day, "telegram": len(ours), "dashboard": len(dash), "ok": 0,
+           "wrong": [], "likely": [], "other_day": [], "checked_at": db.now()}
+    for d in dash:
+        r = linked.get(d["id"])
+        if r and r["posted_at"].startswith(day):
+            out["ok"] += 1
+        elif r:
+            out["other_day"].append({**d, "our": r})
+        elif cand := next((p for p in unlinked if normalize(p["city"]) == normalize(d["city"])
+                           and dashboard.same_plot_number(d["plot"], p["plot"], p["block"])), None):
+            out["likely"].append({**d, "our": cand})
+        else:
+            out["wrong"].append(d)
+    out["not_reserved"] = [r for r in ours if r["status"] in ("pending", "failed")]
+    if day == datetime.now(db.TZ).date().isoformat():  # the header badge shows today's result
+        _last_compare.update(day=day, wrong=len(out["wrong"]), checked_at=out["checked_at"])
+    return out
+
+
+def _ar_time(s: str | None) -> str:
+    """madinty's "2026-10-28 09:03 AM" -> "9:03 ص" (12-hour clock, like the panel)."""
+    try:
+        t = datetime.strptime(s or "", "%Y-%m-%d %I:%M %p")
+    except ValueError:
+        return s or "؟"
+    return f"{t.hour % 12 or 12}:{t.minute:02d} {'ص' if t.hour < 12 else 'م'}"
+
+
+async def compare_and_warn(day: str) -> dict:
+    """Compare `day` and warn (once per dashboard plot per day) about reservations with no Telegram message."""
+    res = await compare_day(day)
+    wrong = {d["id"]: d for d in res["wrong"]}
+    for i in sorted(db.new_today("compare_notified", day, wrong)):
+        d = wrong[i]
+        notify("wrong", f"حجز في مدينتي من غير رسالة تليجرام: {d['city']} – رقم {d['plot']}",
+               f"{d['region']} | {(d['area'] or 0):g} م² | قطعة الداشبورد #{d['id']} | اتحجزت {_ar_time(d['reserved_at'])}",
+               level="error", important=True)
+    return res
+
+
+async def compare_loop():
+    await asyncio.sleep(60)  # first run soon after startup, so the header badge has a number
+    while True:
+        if dashboard.is_configured():
+            try:
+                await compare_and_warn(datetime.now(db.TZ).date().isoformat())
+            except Exception as e:
+                notify("error", "مقدرتش أقارن مع الداشبورد", str(e)[:200], level="error", important=True,
+                       throttle="dashboard")
+        await asyncio.sleep(COMPARE_EVERY)
+
+
 async def recheck_loop():
     while True:
         await asyncio.sleep(RECHECK_EVERY)
@@ -218,7 +289,7 @@ listener = Listener(on_new_plot=on_new_plot)
 
 @asynccontextmanager
 async def lifespan(app):
-    tasks = [asyncio.create_task(worker()), asyncio.create_task(recheck_loop())]
+    tasks = [asyncio.create_task(worker()), asyncio.create_task(recheck_loop()), asyncio.create_task(compare_loop())]
     if db.get_setting("listener_enabled") == "1":
         try:
             await listener.start()
@@ -232,11 +303,17 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=STATIC), name="static")  # shell.css / shell.js shared by every page
 
 
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/compare")
+def compare_page():
+    return FileResponse(STATIC / "compare.html")
 
 
 @app.get("/api/state")
@@ -250,6 +327,7 @@ def state():
         "auto_mode": db.get_setting("auto_mode") == "1",
         "queue": len(_queued),
         "verify_batch": _batch,
+        "compare": _last_compare if _last_compare.get("day") == today else None,
         "dashboard_configured": dashboard.is_configured(),
         "dashboard_url": os.environ.get("DASHBOARD_BASE_URL", "").rstrip("/")
                          + f"/{os.environ.get('DASHBOARD_LOCALE', 'ar')}/dashboard/land_plots",
@@ -339,6 +417,16 @@ async def verify_pending():
         fut.add_done_callback(lambda f, i=plot_id: tick(f, i))
     await asyncio.gather(*futs)
     return {"checked": batch["total"], "done": batch["done"]}
+
+
+@app.get("/api/compare")
+async def compare(day: str | None = None):
+    if not dashboard.is_configured():
+        raise HTTPException(409, "لازم الربط مع الداشبورد يكون جاهز الأول")
+    try:
+        return await compare_day(day or datetime.now(db.TZ).date().isoformat())
+    except Exception as e:
+        raise HTTPException(502, f"مش قادر أوصل للداشبورد: {e}")
 
 
 @app.post("/api/plots/{plot_id}/mark-done")

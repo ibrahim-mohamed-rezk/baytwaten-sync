@@ -156,6 +156,47 @@ async def test_search_reads_every_page():
         dashboard.PER_PAGE = old
 
 
+async def test_compare_day():
+    """The dashboard's own "reserved on D" list vs Telegram, one plot per bucket. Read-only."""
+    use_dashboard(httpx.ASGITransport(app=fake.app))
+    D, city, region = "2030-01-15", "العبور الجديدة", "الحى 24 -منطقة TJ"
+    for i, plot, at in [("9001", "101", D), ("9002", "102", D), ("9003", "103", D), ("9004", "104", D),
+                        ("9005", "105", "2030-01-14")]:
+        fake.PLOTS[i] = dict(plot=plot, phase="1", city=city, region=region, nb="", area=500, status="reserved",
+                             at=f"{at} 10:00 AM")
+
+    def tg(plot, posted, **fields):
+        r = dict(day_count=None, city=city, sector=region, block="", plot=plot, area=500, features=None,
+                 down_payment=None, project_reserved=None, project_total=None)
+        pid = db.insert_plot(next(_msg_ids), f"{posted}T09:00:00", r, plot_key(r), "test")
+        db.update_plot(pid, **fields)
+        return pid
+    ok = tg("101", D, status="done", dashboard_id="9001")
+    other = tg("102", "2030-01-14", status="done", dashboard_id="9002")   # yesterday's message
+    manual = tg("103", D, status="done", note="اتحدّثت يدوي")                # ticked by hand, no link
+    waiting = tg("106", D)                                                  # still pending
+    posts = len(fake.POSTS)
+
+    r = await main.compare_day(D)
+    assert (r["telegram"], r["dashboard"], r["ok"]) == (3, 4, 1), r  # 102 was posted the day before
+    assert [d["id"] for d in r["wrong"]] == ["9004"], r["wrong"]
+    assert [(d["id"], d["our"]["id"]) for d in r["likely"]] == [("9003", manual)]
+    assert [(d["id"], d["our"]["id"]) for d in r["other_day"]] == [("9002", other)]
+    assert [p["id"] for p in r["not_reserved"]] == [waiting] and ok
+    assert r["wrong"][0]["reserved_at"] == f"{D} 10:00 AM"
+    assert len(fake.POSTS) == posts, "comparing is read-only"
+
+    # the background check warns once per wrong plot, not on every run
+    await main.compare_and_warn(D)
+    await main.compare_and_warn(D)
+    warned = db.q("SELECT * FROM notifications WHERE kind='wrong'")
+    assert len(warned) == 1 and "104" in warned[0]["title"] and warned[0]["important"], warned
+    assert "10:00 ص" in warned[0]["body"], warned[0]["body"]
+
+    # the header badge carries today's result only
+    assert main.state()["compare"] is None
+
+
 async def run():
     main.JOB_DELAY = 0
     worker = asyncio.create_task(main.worker())

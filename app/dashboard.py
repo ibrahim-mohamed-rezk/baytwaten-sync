@@ -106,6 +106,7 @@ async def _request(method: str, url: str, **kw) -> httpx.Response:
 COLUMNS = {  # normalized header text -> field
     "#": "row_id", "رقم القطعه": "plot", "المرحله": "phase", "الموقع": "city",
     "المنطقه": "region", "المجاوره": "neighborhood", "المساحه": "area", "الحاله": "status",
+    "تاريخ الحجز": "reserved_at",
 }
 PLOT_URL = re.compile(r"land_plots/(\d+)(?:/|\b)")
 
@@ -162,6 +163,7 @@ def parse_plots_page(html: str) -> list[dict]:
                 "region": text("region"), "neighborhood": text("neighborhood"),
                 "area": _number(text("area")),
                 "status": classify_status(_status_of(cell("status"))) if cell("status") else "unknown",
+                "reserved_at": text("reserved_at").strip("—- ") or None,  # "2026-10-28 02:03 PM"
             })
     return out
 
@@ -170,11 +172,25 @@ PER_PAGE = 500  # the dashboard accepts up to 1000; anything above silently fall
 MAX_PAGES = 20
 
 
-async def _get_page(q: str, page: int, per_page: int) -> list[dict]:
+async def _get_page(q: str, page: int, per_page: int, **filters) -> list[dict]:
     global _csrf
-    resp = await _request("GET", f"{_prefix()}/land_plots", params={"q": q, "per_page": per_page, "page": page})
+    resp = await _request("GET", f"{_prefix()}/land_plots",
+                          params={"q": q, "per_page": per_page, "page": page, **filters})
     _csrf = _extract_csrf(resp.text) or _csrf
     return parse_plots_page(resp.text)
+
+
+async def _all_pages(q: str, **filters) -> list[dict]:
+    out: dict[str, dict] = {}
+    for page in range(1, MAX_PAGES + 1):
+        rows = await _get_page(q, page, PER_PAGE, **filters)
+        new = {r["id"]: r for r in rows if r["id"] not in out}
+        out.update(new)
+        if len(rows) < PER_PAGE or not new:
+            break
+    else:
+        logging.getLogger("dashboard").warning("list %r %s: stopped after %d pages", q, filters, MAX_PAGES)
+    return list(out.values())
 
 
 async def search(plot_number: str) -> list[dict]:
@@ -183,16 +199,12 @@ async def search(plot_number: str) -> list[dict]:
     q is a substring search over all cities, so a short number has many hits (q=10 -> 655 rows). One page
     of 500 used to drop السادات "C10" and report it as not found.
     """
-    out: dict[str, dict] = {}
-    for page in range(1, MAX_PAGES + 1):
-        rows = await _get_page(plot_number, page, PER_PAGE)
-        new = {r["id"]: r for r in rows if r["id"] not in out}
-        out.update(new)
-        if len(rows) < PER_PAGE or not new:
-            break
-    else:
-        logging.getLogger("dashboard").warning("search %r: stopped after %d pages", plot_number, MAX_PAGES)
-    return list(out.values())
+    return await _all_pages(plot_number)
+
+
+async def reserved_on(day: str) -> list[dict]:
+    """Every plot the dashboard says was reserved on `day` (YYYY-MM-DD), by anyone: its own date filter."""
+    return await _all_pages("", status="reserved", reserved_from=day, reserved_to=day)
 
 
 # ---------- reserve (AJAX) ----------

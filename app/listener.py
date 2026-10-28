@@ -44,16 +44,6 @@ def _today_utc() -> datetime:
     return datetime.combine(datetime.now(db.TZ).date(), time.min, db.TZ).astimezone(timezone.utc)
 
 
-def _warn_once_per_day(day: str, gap: set[int]) -> set[int]:
-    """Counters in `gap` not warned about yet today (kept in settings, so a restart doesn't repeat them)."""
-    saved_day, _, saved = (db.get_setting("gap_notified", "") or "").partition(":")
-    seen = {int(n) for n in saved.split(",") if n} if saved_day == day else set()
-    new = set(gap) - seen
-    if new:
-        db.set_setting("gap_notified", f"{day}:" + ",".join(map(str, sorted(seen | new))))
-    return new
-
-
 class Listener:
     def __init__(self, on_new_plot=None):
         self.client: TelegramClient | None = None
@@ -197,8 +187,8 @@ class Listener:
                     continue
                 # only warn about counters a resync couldn't recover; most gaps fill themselves within a minute
                 still = set(gap) & set(db.missing_day_counts(day))
-                if new_gap := _warn_once_per_day(day, still):
-                    notify("gap", "في رسايل ناقصة من القناة", "عداد إجمالي اليوم: " + "، ".join(map(str, sorted(new_gap)))
+                if new_gap := db.new_today("gap_notified", day, still):
+                    notify("gap", "في رسايل ناقصة من القناة", "عداد إجمالي اليوم: " + "، ".join(sorted(new_gap, key=int))
                            + ". جرّب \"هات الرسايل الناقصة\"", level="warning", important=True)
 
     async def start(self) -> int:

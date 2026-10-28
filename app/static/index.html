@@ -3,72 +3,35 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>لوحة الأوتوميشن</title>
+<title>الحجوزات – بيت الوطن</title>
+<link rel="stylesheet" href="/static/shell.css">
 <style>
-  :root { --bg:#f5f6fa; --card:#fff; --text:#1d2433; --muted:#6b7385; --line:#e4e7ee;
-          --blue:#4f6af0; --green:#16a34a; --red:#dc2626; --amber:#d97706; --gray:#6b7280; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: "Segoe UI", Tahoma, sans-serif; background:var(--bg); color:var(--text); }
-  header { background:var(--card); border-bottom:1px solid var(--line); padding:14px 20px;
-           display:flex; flex-wrap:wrap; gap:12px; align-items:center; position:sticky; top:0; z-index:2; }
-  h1 { font-size:18px; margin:0 0 0 auto; }
-  button { font:inherit; border:1px solid var(--line); background:var(--card); border-radius:8px;
-           padding:7px 12px; cursor:pointer; }
-  button:hover { filter:brightness(.96); }
-  button.primary { background:var(--blue); color:#fff; border-color:var(--blue); }
-  button.ok { background:var(--green); color:#fff; border-color:var(--green); }
-  button.danger { color:var(--red); }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  .pill { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px;
-          font-size:13px; background:#eef0f5; }
-  .pill[hidden] { display:none; }
-  a.bell { color:var(--text); text-decoration:none; }
-  #bellCount { background:var(--red); color:#fff; border-radius:999px; padding:0 7px; font-size:12px; }
-  #bellCount[hidden] { display:none; }
-  .dot { width:9px; height:9px; border-radius:50%; background:var(--gray); }
-  .on .dot { background:var(--green); box-shadow:0 0 0 3px #16a34a33; }
-  main { padding:16px 20px; max-width:1400px; margin:auto; }
-  .stats { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
-  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; min-width:110px; }
-  .stat b { display:block; font-size:22px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:14px; }
+  .stat { padding:12px 16px; border-inline-start:4px solid var(--line); }
+  .stat b { display:block; font-size:24px; line-height:1.25; }
   .stat span { color:var(--muted); font-size:13px; }
-  .alert { background:#fff7ed; border:1px solid #fed7aa; color:#9a3412; border-radius:10px;
-           padding:10px 14px; margin-bottom:12px; display:none; }
-  .alert.err { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
-  .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
-  .tabs button.active { background:var(--text); color:#fff; border-color:var(--text); }
-  input[type=search] { font:inherit; padding:7px 10px; border:1px solid var(--line); border-radius:8px; min-width:220px; }
-  .table-wrap { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:auto; }
-  table { width:100%; border-collapse:collapse; font-size:14px; }
-  th, td { padding:9px 10px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
-  th { background:#fafbfd; color:var(--muted); font-weight:600; position:sticky; top:0; }
+  .stat.blue { border-inline-start-color:var(--blue); } .stat.amber { border-inline-start-color:var(--amber); }
+  .stat.green { border-inline-start-color:var(--green); } .stat.red { border-inline-start-color:var(--red); }
+  .stat.red b { color:var(--red); } .stat.gray { border-inline-start-color:var(--gray); }
+  .alert { display:none; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  input[type=search] { min-width:240px; }
   tr.new { animation: flash 3s ease-out; }
   @keyframes flash { from { background:#e0e7ff; } to { background:transparent; } }
-  td.wrap { white-space:normal; min-width:140px; max-width:220px; }
   .plotno { font-weight:700; font-size:15px; cursor:copy; }
-  .status { font-size:12px; padding:3px 8px; border-radius:999px; color:#fff; }
-  .s-pending { background:var(--amber); } .s-done { background:var(--green); }
-  .s-failed { background:var(--red); } .s-rejected, .s-duplicate { background:var(--gray); }
-  .status { display:inline-block; }
   .note { margin-top:4px; color:var(--muted); font-size:12px; white-space:normal; max-width:280px; }
-  .actions { display:flex; gap:6px; }
-  a.link { color:var(--blue); text-decoration:none; align-self:center; font-size:13px; }
-  .empty { padding:40px; text-align:center; color:var(--muted); }
-  #toast { position:fixed; bottom:20px; left:20px; background:var(--text); color:#fff; padding:10px 16px;
-           border-radius:8px; opacity:0; transition:.2s; pointer-events:none; }
-  #toast.show { opacity:1; }
+  .actions { display:flex; gap:6px; align-items:center; }
   #missingBox button { margin-inline-start:8px; }
   #unparsedBox summary { cursor:pointer; }
   pre.raw { white-space:pre-wrap; background:#fff; border:1px solid var(--line); border-radius:8px; padding:8px 10px;
             margin:8px 0 0; font:13px/1.5 "Segoe UI", Tahoma, sans-serif; color:var(--text); }
   .modal { position:fixed; inset:0; background:#1d243366; display:flex; align-items:center; justify-content:center;
            z-index:10; padding:16px; }
-  .modal[hidden] { display:none; }
-  .modal .box { background:var(--card); border-radius:12px; padding:20px 22px; width:min(420px, 100%);
+  .modal .box { background:var(--card); border-radius:14px; padding:20px 22px; width:min(420px, 100%);
                 box-shadow:0 10px 40px #0003; }
   .modal h2 { font-size:17px; margin:0 0 6px; }
   .modal p { color:var(--muted); font-size:14px; margin:0 0 14px; }
-  .bar { height:12px; background:#eef0f5; border-radius:999px; overflow:hidden; }
+  .bar { height:12px; background:var(--soft); border-radius:999px; overflow:hidden; }
   .bar div { height:100%; width:0; background:var(--blue); transition:width .3s; }
   .bar.finished div { background:var(--green); }
   .progress-nums { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); margin:8px 0 14px; }
@@ -76,17 +39,10 @@
 </style>
 </head>
 <body>
-<header>
-  <h1>لوحة الأوتوميشن – حجوزات بيت الوطن</h1>
-  <span id="listenerPill" class="pill"><span class="dot"></span><span id="listenerText">…</span></span>
-  <button id="listenerBtn">…</button>
-  <span id="queuePill" class="pill" hidden title="بيشوف القطع المنتظرة لو كانت اتحجزت في الداشبورد خلاص">🔄 <span id="queueText"></span></span>
-  <span class="pill" title="تحديث الداشبورد تلقائي للقطع المطابقة 100%">
-    <label><input type="checkbox" id="autoMode"> تحديث تلقائي</label>
-  </span>
-  <a class="pill bell" href="/notifications" title="كل الإشعارات والرسايل">🔔 الإشعارات <b id="bellCount" hidden></b></a>
-</header>
 <main>
+  <div class="page-head">
+    <div><h1>📋 حجوزات التليجرام</h1><p>كل رسالة "تم حجز قطعة" من القناة، وحالتها في مدينتي.</p></div>
+  </div>
   <div id="errorBox" class="alert err"></div>
   <div id="missingBox" class="alert">
     <span id="missingText"></span>
@@ -119,7 +75,6 @@
     <div class="empty" id="empty" hidden>مفيش قطع هنا</div>
   </div>
 </main>
-<div id="toast"></div>
 <div id="confirmModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
   <div class="box">
     <h2 id="confirmTitle"></h2>
@@ -137,30 +92,10 @@
   </div>
 </div>
 
+<script src="/static/shell.js"></script>
 <script>
-const STATUS = { pending:"منتظر", done:"اتحدّث", failed:"محتاج مراجعة", rejected:"مرفوض", duplicate:"مكرر" };
 const TABS = [["pending","منتظر"],["failed","محتاج مراجعة"],["done","اتحدّث"],["duplicate","مكرر"],["rejected","مرفوض"],["","الكل"]];
 let tab = "pending", state = null, seen = new Set(), firstLoad = true;
-
-const $ = id => document.getElementById(id);
-// "2026-10-28T14:19:08" -> "2:19 م" (12-hour clock everywhere in the panel)
-const t12 = iso => { if (!iso) return ""; const [h, m] = iso.slice(11, 16).split(":").map(Number);
-  return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "ص" : "م"}`; };
-const esc = s =>(s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-function toast(msg) {
-  const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2500);
-  // every toast also lands on the notifications page
-  const level = msg.startsWith("⚠️") ? "warning" : msg.startsWith("✅") ? "success" : "info";
-  fetch("/api/notifications/panel", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: msg, level }) }).catch(() => {});
-}
-
-async function api(path, method = "GET") {
-  const r = await fetch(path, { method });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.detail || r.statusText);
-  return body;
-}
 
 function renderTabs() {
   const c = state?.counts || {};
@@ -169,13 +104,9 @@ function renderTabs() {
   $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { tab = b.dataset.k; renderTabs(); loadRows(); });
 }
 
-async function loadState() {
-  state = await api("/api/state");
-  const L = state.listener;
-  $("listenerPill").classList.toggle("on", L.running);
-  $("listenerText").textContent = L.running ? "شغال – بيسمع القناة" : "واقف";
-  $("listenerBtn").textContent = L.running ? "⏸ إيقاف" : "▶ تشغيل";
-  $("listenerBtn").className = L.running ? "danger" : "primary";
+function renderState(s) {
+  state = s;
+  const L = s.listener;
   $("errorBox").style.display = L.error ? "block" : "none";
   $("errorBox").textContent = L.error ? "⚠️ " + L.error : "";
   $("missingBox").style.display = state.missing.length ? "block" : "none";
@@ -190,18 +121,13 @@ async function loadState() {
       `<pre class="raw"><b>#${u.msg_id} – ${esc(t12(u.at))}</b>\n${esc(u.text)}</pre>`).join("");
   }
   $("dashBox").style.display = state.dashboard_configured ? "none" : "block";
-  $("autoMode").checked = state.auto_mode;
-  $("autoMode").disabled = !state.dashboard_configured;
   $("approveAll").disabled = !state.dashboard_configured || !state.counts.pending;
-  $("bellCount").hidden = !state.notifications_unread;
-  $("bellCount").textContent = state.notifications_unread;
   if (!$("verifyAll")._busy) $("verifyAll").disabled = !state.dashboard_configured;
-  $("queuePill").hidden = !state.queue;
-  $("queueText").textContent = `بيراجع مع الداشبورد… (${state.queue})`;
   const c = state.counts, total = Object.values(c).reduce((a, b) => a + b, 0);
-  $("stats").innerHTML = [["حجوزات النهارده", total], ["منتظر", c.pending || 0], ["اتحدّث", c.done || 0],
-    ["محتاج مراجعة", c.failed || 0], ["آخر رسالة", L.last_message_at ? t12(L.last_message_at) : "—"]]
-    .map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
+  $("stats").innerHTML = [["blue", total, "حجوزات النهارده"], ["amber", c.pending || 0, "منتظر"],
+    ["green", c.done || 0, "اتحدّث"], [c.failed ? "red" : "gray", c.failed || 0, "محتاج مراجعة"],
+    ["gray", L.last_message_at ? t12(L.last_message_at) : "—", "آخر رسالة"]]
+    .map(([cls, v, l]) => `<div class="card stat ${cls}"><b>${v}</b><span>${l}</span></div>`).join("");
   renderTabs();
 }
 
@@ -251,22 +177,6 @@ $("rows").addEventListener("click", async e => {
   } catch (err) { toast("⚠️ " + err.message); }
   await refresh();
 });
-
-$("listenerBtn").onclick = async () => {
-  $("listenerBtn").disabled = true;
-  try {
-    if (state.listener.running) { await api("/api/listener/stop", "POST"); toast("⏸ اتوقف"); }
-    else { const r = await api("/api/listener/start", "POST"); toast(`▶ اشتغل – جاب ${r.caught_up} رسالة فاتت`); }
-  } catch (err) { toast("⚠️ " + err.message); }
-  $("listenerBtn").disabled = false;
-  await refresh();
-};
-
-$("autoMode").onchange = async e => {
-  try { await api(`/api/auto-mode/${e.target.checked ? 1 : 0}`, "POST"); }
-  catch (err) { toast("⚠️ " + err.message); }
-  await refresh();
-};
 
 $("approveAll").onclick = async () => {
   const n = state?.counts?.pending || 0;
@@ -348,14 +258,14 @@ let searchTimer;
 $("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadRows, 300); };
 $("todayOnly").onchange = loadRows;
 
+Shell.onState(async s => { renderState(s); await loadRows(); });
 async function refresh() {
-  try { await loadState(); await loadRows(); } catch (e) { $("errorBox").style.display = "block"; $("errorBox").textContent = "⚠️ السيرفر مش شغال؟ " + e.message; }
+  try { await Shell.refresh(); } catch (e) { $("errorBox").style.display = "block"; $("errorBox").textContent = "⚠️ السيرفر مش شغال؟ " + e.message; }
 }
 // "افتح القطعة" links from the notifications page: /?q=<plot number>
 const linkQ = new URLSearchParams(location.search).get("q");
 if (linkQ) { $("search").value = linkQ; $("todayOnly").checked = false; tab = ""; }
 refresh();
-setInterval(refresh, 5000);
 </script>
 </body>
 </html>

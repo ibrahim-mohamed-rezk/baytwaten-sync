@@ -155,6 +155,17 @@ def missing_day_counts(day: str) -> list[int]:
     return sorted(set(range(seen[0], seen[-1] + 1)) - set(seen))
 
 
+def new_today(key: str, day: str, items) -> set[str]:
+    """Items not seen yet under `key` for `day`, then remembered. Kept in settings so a restart doesn't
+    repeat a warning; a new day starts empty."""
+    saved_day, _, saved = (get_setting(key, "") or "").partition(":")
+    seen = set(saved.split(",")) - {""} if saved_day == day else set()
+    new = {str(i) for i in items} - seen
+    if new:
+        set_setting(key, f"{day}:" + ",".join(sorted(seen | new)))
+    return new
+
+
 def region_key(city: str, sector: str) -> str:
     from .parser import normalize
     return f"{normalize(city)}|{normalize(sector)}"

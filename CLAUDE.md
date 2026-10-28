@@ -67,6 +67,22 @@ UI text is Egyptian Arabic, RTL.
     Its live progress is in `/api/state.verify_batch` (`{total, checked, done}`), which the panel polls every 0.5s
     to drive a progress-bar popup.
     `/api/state.queue` drives the header pill "بيراجع مع الداشبورد… (N)".
+- Comparison with madinty (`compare_day(day)` in `app/main.py`, read-only):
+  - It reads the dashboard's own "reserved on that day" list: `dashboard.reserved_on(day)` =
+    `status=reserved&reserved_from=day&reserved_to=day`, every page. The "تاريخ الحجز" column is parsed as `reserved_at`.
+  - Each dashboard plot goes into one bucket:
+    - `ok`: linked to a Telegram row posted that day.
+    - `other_day`: linked to a row from another day. E.g. yesterday evening's messages recovered and reserved this morning.
+    - `likely`: not linked, but a row ticked by hand has the same city and number.
+    - `wrong`: no Telegram message at all.
+  - `not_reserved` lists that day's rows still pending or in review.
+  - Page `/compare` (`app/static/compare.html`, "📊 مقارنة مع مدينتي") calls `GET /api/compare?day=` on load and on demand,
+    never on the 5s poll. It has a day picker (`?day=` in the URL), summary cards, a verdict and one collapsible table per bucket.
+  - `compare_loop` runs a minute after startup, then every `COMPARE_EVERY` (15 min), for today. Each new `wrong` plot gets
+    one important notification (`db.new_today("compare_notified", …)`). Today's last result is in `/api/state.compare`
+    (`{day, wrong, checked_at}`), which drives the header badge.
+  - On 2026-10-28: Telegram 133 vs madinty 138. That was 4 from the day before, plus #1601 (العلمين plot 10),
+    which was reserved by hand with no message.
 - `app/notify.py`: notifications.
   - `notify(kind, title, body, level, plot_id, important, throttle)` stores a row in `notifications`.
   - `important=True` also shows a Windows toast via PowerShell's WinRT API. It goes through `-EncodedCommand`
@@ -79,9 +95,14 @@ UI text is Egyptian Arabic, RTL.
   - Setting `win_notify` (default on) is toggled on the page.
   - `/api/notifications` (filter all/important/unread), `/read?up_to=`, `/panel` (the panel's toasts), `/windows/{on}`, `/test`.
 - `app/static/notifications.html`: the notifications page at `/notifications`. Grouped by day, with filters, auto-refresh,
-  and "افتح القطعة" links (`/?q=<plot>`). What's shown while the page is visible counts as read. The panel header bell
+  and "افتح القطعة" links (`/?q=<plot>`). What's shown while the page is visible counts as read. The header's 🔔 link
   shows unread important ones.
-- `app/static/index.html`: the panel. Vanilla JS, polls `/api/state` and `/api/plots` every 5s.
+- `app/static/shell.js` + `shell.css` (served under `/static`): shared by every page.
+  - The header: nav links (`LINKS`, each with an optional badge), live status (listener, madinty configured, queue),
+    the auto-mode switch and the ▶/⏸ listener button. It polls `/api/state` every 5s; pages subscribe with `Shell.onState(fn)`.
+  - Helpers `$`, `esc`, `t12` (12-hour clock with ص/م, used for every time shown), `api`, `toast`, `STATUS`.
+  - Adding a page: one `LINKS` entry plus one `FileResponse` route in `main.py`.
+- `app/static/index.html`: the panel (الحجوزات). Vanilla JS, polls `/api/state` and `/api/plots` every 5s.
 - `check_dashboard.py`: read-only connection check (login + search, prints parsed rows, dumps `debug_page.html` if nothing parsed).
 - `scripts/find_message.py N`: read-only. Finds today's channel message with daily counter N and says which
   `parse_reservation()` check rejects it. It uses a temp copy of `telegram.session`, so it's safe while the panel runs.

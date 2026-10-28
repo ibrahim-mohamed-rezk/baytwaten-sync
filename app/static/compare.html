@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>مقارنة مع مدينتي</title>
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  .day-picker { display:flex; gap:6px; align-items:center; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:14px; }
+  .metric { padding:14px 16px; border-inline-start:4px solid var(--line); }
+  .metric b { display:block; font-size:26px; line-height:1.2; }
+  .metric span { color:var(--muted); font-size:13px; }
+  .metric.blue { border-inline-start-color:var(--blue); } .metric.green { border-inline-start-color:var(--green); }
+  .metric.red { border-inline-start-color:var(--red); } .metric.red b { color:var(--red); }
+  .metric.amber { border-inline-start-color:var(--amber); } .metric.gray { border-inline-start-color:var(--gray); }
+  .verdict { padding:14px 16px; margin-bottom:16px; display:flex; gap:12px; align-items:flex-start; }
+  .verdict .big { font-size:24px; line-height:1; }
+  .verdict h2 { font-size:16px; margin:0 0 4px; }
+  .verdict p { margin:0; color:var(--muted); }
+  .verdict.good { background:#f0fdf4; border-color:#bbf7d0; }
+  .verdict.bad { background:#fef2f2; border-color:#fecaca; }
+  .group { margin-bottom:14px; overflow:hidden; }
+  .group > summary { list-style:none; cursor:pointer; padding:12px 16px; display:flex; gap:10px; align-items:center;
+                     border-inline-start:4px solid var(--line); }
+  .group > summary::-webkit-details-marker { display:none; }
+  .group > summary::after { content:"▾"; margin-inline-start:auto; color:var(--muted); transition:transform .15s; }
+  .group:not([open]) > summary::after { transform:rotate(90deg); }
+  .group h3 { font-size:15px; margin:0; }
+  .group .why { color:var(--muted); font-size:13px; margin:2px 0 0; font-weight:normal; }
+  .group .count { background:var(--soft); border-radius:999px; padding:2px 10px; font-weight:700; }
+  .group.red > summary { border-inline-start-color:var(--red); } .group.red .count { background:#fee2e2; color:#991b1b; }
+  .group.amber > summary { border-inline-start-color:var(--amber); } .group.amber .count { background:#fef3c7; color:#92400e; }
+  .group.blue > summary { border-inline-start-color:var(--blue); } .group.blue .count { background:#e0e7ff; color:#3730a3; }
+  .group.gray > summary { border-inline-start-color:var(--gray); }
+  .group table { border-top:1px solid var(--line); }
+  .group th { position:static; }
+  .plot { font-weight:700; font-size:15px; }
+  .loading { padding:40px; text-align:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <div class="page-head">
+    <div>
+      <h1>📊 مقارنة مع مدينتي</h1>
+      <p>بيقارن اللي اتحجز في داشبورد مدينتي في اليوم ده باللي جه في قناة التليجرام. بيقرا بس، مش بيغيّر حاجة في مدينتي.</p>
+    </div>
+    <span class="grow"></span>
+    <div class="day-picker">
+      <button id="prevDay" title="اليوم اللي قبله">→</button>
+      <input type="date" id="day">
+      <button id="nextDay" title="اليوم اللي بعده">←</button>
+      <button id="todayBtn">النهارده</button>
+    </div>
+    <button class="primary" id="runBtn">🔄 قارن تاني</button>
+  </div>
+
+  <div id="notConfigured" class="alert" hidden>الربط مع مدينتي لسه مش متظبط، فمش هينفع أقارن.</div>
+  <div id="result"><div class="loading">بيقارن…</div></div>
+  <p class="muted" id="checkedAt"></p>
+</main>
+
+<script src="/static/shell.js"></script>
+<script>
+// "2026-10-28 09:03 AM" (madinty's تاريخ الحجز) -> "9:03 ص", with the date only when it's another day
+function dashTime(s, day) {
+  const m = /^(\d{4}-\d\d-\d\d) (\d\d?):(\d\d)\s*(AM|PM)/i.exec(s || "");
+  if (!m) return esc(s || "");
+  const t = `${+m[2]}:${m[3]} ${m[4].toUpperCase() === "AM" ? "ص" : "م"}`;
+  return esc(m[1] === day ? t : `${m[1]} ${t}`);
+}
+const dashLink = plot => Shell.state?.dashboard_url
+  ? `<a class="link" target="_blank" href="${Shell.state.dashboard_url}?q=${encodeURIComponent(plot)}&per_page=500">افتح في مدينتي ↗</a>` : "";
+const tgCell = (p, day) => `<a class="link" href="/?q=${encodeURIComponent(p.plot)}">#${esc(p.id)}</a>
+  ${p.posted_at.slice(0, 10) === day ? "" : esc(p.posted_at.slice(0, 10)) + " "}${esc(t12(p.posted_at))}
+  <span class="status s-${p.status}">${STATUS[p.status]}</span>`;
+
+function dashTable(list, day, withTg) {
+  return `<div style="overflow:auto"><table><thead><tr><th>رقم القطعة</th><th>المدينة</th><th>المنطقة</th><th>المساحة</th>
+    <th>اتحجزت في مدينتي</th>${withTg ? "<th>رسالة التليجرام</th>" : ""}<th>#مدينتي</th><th></th></tr></thead><tbody>
+    ${list.map(d => `<tr><td class="plot">${esc(d.plot)}</td><td>${esc(d.city)}</td><td class="wrap">${esc(d.region)}</td>
+      <td>${d.area ? esc(d.area) + " م²" : ""}</td><td>${dashTime(d.reserved_at, day)}</td>
+      ${withTg ? `<td>${tgCell(d.our, day)}</td>` : ""}<td class="muted">${esc(d.id)}</td><td>${dashLink(d.plot)}</td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+function group(cls, title, why, list, body, open) {
+  if (!list.length) return "";
+  return `<details class="card group ${cls}" ${open ? "open" : ""}><summary><span class="count">${list.length}</span>
+    <div><h3>${title}</h3><p class="why">${why}</p></div></summary>${body}</details>`;
+}
+
+function render(r) {
+  const day = r.day, wrong = r.wrong.length, extra = r.dashboard - r.telegram;
+  const metric = (cls, n, label) => `<div class="card metric ${cls}"><b>${n}</b><span>${label}</span></div>`;
+  const parts = [r.other_day.length && `${r.other_day.length} رسالتها من يوم تاني`, wrong && `${wrong} من غير رسالة`,
+                 r.likely.length && `${r.likely.length} محتاجة نظرة`].filter(Boolean);
+  const verdict = wrong || r.likely.length
+    ? `<div class="card verdict bad"><span class="big">❌</span><div><h2>${wrong ? `في ${wrong} حجز في مدينتي من غير رسالة تليجرام` : `في ${r.likely.length} حجز محتاج نظرة`}</h2>
+       <p>مدينتي ${r.dashboard} والتليجرام ${r.telegram}${parts.length ? `. الفرق: ${parts.join("، ")}` : ""}. راجع الجدول الأحمر تحت.</p></div></div>`
+    : `<div class="card verdict good"><span class="big">✅</span><div><h2>مفيش حجوزات غلط في مدينتي</h2>
+       <p>${extra === 0 ? "العدد متساوي." : `مدينتي ${r.dashboard} والتليجرام ${r.telegram}${parts.length ? `. الفرق: ${parts.join("، ")}، ودي سليمة` : ""}.`}</p></div></div>`;
+
+  $("result").innerHTML = `
+    <div class="cards">
+      ${metric("blue", r.telegram, "رسايل التليجرام")}
+      ${metric("blue", r.dashboard, "محجوزة في مدينتي")}
+      ${metric("green", r.ok, "مطابقة")}
+      ${metric(wrong ? "red" : "green", wrong, "من غير رسالة تليجرام")}
+      ${metric("gray", r.other_day.length, "رسالتها من يوم تاني")}
+      ${metric(r.not_reserved.length ? "amber" : "gray", r.not_reserved.length, "في التليجرام ولسه مش محجوزة")}
+    </div>
+    ${verdict}
+    ${group("red", "❌ محجوزة في مدينتي ومفيش لها رسالة في التليجرام",
+        "حد حجزها بإيده في مدينتي أو بالغلط. افتحها في مدينتي واتأكد.", r.wrong, dashTable(r.wrong, day, false), true)}
+    ${group("amber", "🔎 غالباً تبع قطعة اتعلّمت \"تم يدوي\"",
+        "نفس المدينة ونفس الرقم بس من غير ربط محفوظ. بص عليها.", r.likely, dashTable(r.likely, day, true), true)}
+    ${group("blue", "📅 اتحجزت في اليوم ده بس رسالتها من يوم تاني",
+        "زي رسايل آخر الليل اللي اتحجزت تاني يوم الصبح. دي سليمة.", r.other_day, dashTable(r.other_day, day, true), false)}
+    ${group("gray", "⏳ في التليجرام ولسه مش محجوزة في مدينتي",
+        "منتظرة أو محتاجة مراجعة في صفحة الحجوزات.", r.not_reserved,
+        `<div style="overflow:auto"><table><thead><tr><th>رقم القطعة</th><th>المدينة</th><th>الحي / المنطقة</th><th>المربع</th><th>الرسالة</th></tr></thead><tbody>
+        ${r.not_reserved.map(p => `<tr><td class="plot">${esc(p.plot)}</td><td>${esc(p.city)}</td><td class="wrap">${esc(p.sector)}</td>
+          <td class="wrap">${esc(p.block)}</td><td>${tgCell(p, day)}</td></tr>`).join("")}</tbody></table></div>`, false)}`;
+  $("checkedAt").textContent = "آخر مقارنة " + t12(r.checked_at);
+}
+
+async function run() {
+  const b = $("runBtn");
+  b.disabled = true; b.textContent = "بيقارن…";
+  history.replaceState(null, "", "?day=" + $("day").value);
+  $("nextDay").disabled = $("day").value >= Shell.state.today;
+  try { render(await api(`/api/compare?day=${$("day").value}`)); }
+  catch (err) { $("result").innerHTML = `<div class="alert err">⚠️ ${esc(err.message)}</div>`; }
+  b.disabled = false; b.textContent = "🔄 قارن تاني";
+  Shell.refresh().catch(() => {});  // today's run updates the header badge
+}
+
+function shiftDay(n) {
+  const d = new Date($("day").value + "T12:00:00");
+  d.setDate(d.getDate() + n);
+  $("day").value = d.toLocaleDateString("en-CA");
+  run();
+}
+$("prevDay").onclick = () => shiftDay(-1);
+$("nextDay").onclick = () => shiftDay(1);
+$("todayBtn").onclick = () => { $("day").value = Shell.state.today; run(); };
+$("runBtn").onclick = run;
+$("day").onchange = run;
+
+Shell.refresh().then(s => {
+  $("day").value = new URLSearchParams(location.search).get("day") || s.today;
+  $("day").max = s.today;
+  if (!s.dashboard_configured) { $("notConfigured").hidden = false; $("result").innerHTML = ""; $("runBtn").disabled = true; return; }
+  run();
+}).catch(e => { $("result").innerHTML = `<div class="alert err">⚠️ السيرفر مش شغال؟ ${esc(e.message)}</div>`; });
+</script>
+</body>
+</html>
