@@ -24,10 +24,24 @@ UI text is Egyptian Arabic, RTL.
   `normalize()` folds Arabic variants (ة/ه, ى/ي, أ/ا, digits, punctuation). `plot_key` = city|sector|block|plot.
   Hourly "🔥 الأكثر حجزًا" summaries are ignored.
 - `app/listener.py`: Telethon client. Resolves the invite link via `CheckChatInviteRequest`, then runs a NewMessage handler and `catch_up()`.
+  - **Don't rely on push updates alone.** Telethon can miss channel updates after a short disconnect or sleep.
+    On 2026-10-28, counter 67 (msg 16244) never reached the handler. It was posted while the listener ran and
+    edited 16 minutes later, so either the push was missed or its original text didn't parse. We can't tell which.
+  - The client is created with `catch_up=True`, and `start()` calls `client.catch_up()` once the handler is registered.
+  - `resync()` re-reads the latest `RESYNC_LIMIT` (100) messages by recent window, **not** `min_id=last_msg_id`,
+    because a missed message can be older than `last_msg_id`. `_resync_loop` runs it every `RESYNC_EVERY` (2 min)
+    while listening, and at most every `GAP_RESYNC_EVERY` (1 min) while `missing_day_counts()` is non-empty.
+    Recoveries are logged as `resync_recovered`. The window can reach into yesterday, which is fine.
+  - `refetch_today()` re-reads all of today, ignoring `last_msg_id`. It's behind the gap alert's
+    "🔁 هات الرسايل الناقصة" button (`POST /api/listener/refetch-today`).
+  - A message containing "تم حجز" that doesn't parse is logged once as `unparsed` (`msg <id>: <first 200 chars>`).
+    `db.unparsed_today()` feeds the panel's expandable "في N رسالة مااتقرتش" alert, leaving out any message that has a plot row since.
 - `app/db.py`: SQLite (`data.sqlite3`, overridable with `SYNC_DB_PATH`, which tests use). Tables: `plots`, `settings`, `region_aliases`, `log`.
   - Plot statuses: pending | done | rejected | failed | duplicate.
   - `missing_day_counts()` uses the channel's sequential "إجمالي اليوم" counter to detect missed messages.
   - Small ALTER-based migrations live in the module body.
+  - `insert_plot()` dedupes with `INSERT OR IGNORE` on the UNIQUE `msg_id`, because the handler, catch-up and
+    resync can save the same message concurrently. Saving any message twice is safe.
 - `app/dashboard.py`: the dashboard client. See "Dashboard facts" below.
 - `app/main.py`: FastAPI app and `/api/*` endpoints.
   - `find_target(plot)` is the read-only lookup: search + `match()`, returns `(target, confident, suggestion, reason)`.
@@ -48,11 +62,15 @@ UI text is Egyptian Arabic, RTL.
     `/api/state.queue` drives the header pill "بيراجع مع الداشبورد… (N)".
 - `app/static/index.html`: the panel. Vanilla JS, polls `/api/state` and `/api/plots` every 5s.
 - `check_dashboard.py`: read-only connection check (login + search, prints parsed rows, dumps `debug_page.html` if nothing parsed).
+- `scripts/find_message.py N`: read-only. Finds today's channel message with daily counter N and says which
+  `parse_reservation()` check rejects it. It uses a temp copy of `telegram.session`, so it's safe while the panel runs.
 - `tests/`:
   - `test_parser.py`: plain asserts, run with `python -m tests.test_parser`.
   - `sample_messages.txt`: real channel messages.
   - `test_verify.py`: verify/worker flow against `fake_dashboard` served in-process (`httpx.ASGITransport`)
     with a temp DB. Run with `python -m tests.test_verify`.
+  - `test_listener.py`: resync, refetch, unparsed logging, msg_id dedupe and the gap trigger, against a fake
+    Telethon client with a temp DB. Run with `python -m tests.test_listener`.
   - `fake_dashboard.py`: mock of the Laravel dashboard. `POSTS` records every update-status call.
   - `seed_fake_messages.py`: pushes the samples through the listener with no Telegram account.
 
@@ -88,6 +106,7 @@ neighborhood-in-plot-number case, now covered by `test_match_real_rows`.
 A real reserve POST from the panel works, and ▶ catches up on the real channel over Telethon.
 Catch-up exposed that most of the day's plots were already reserved by hand, which led to the read-only `verify()` flow.
 That flow also works against the real dashboard: its first 5-minute recheck marked 47 plots done, with no `verify_error`.
+Resync works against the real channel too. Its first run recovered counter 67 plus 7 unsynced messages from the evening before.
 
 Next ideas, only if the user asks:
 - Use `zone_id` in the search instead of local filtering.
@@ -100,6 +119,7 @@ Next ideas, only if the user asks:
 python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python -m tests.test_parser
 .venv\Scripts\python -m tests.test_verify
+.venv\Scripts\python -m tests.test_listener
 .venv\Scripts\python -m uvicorn tests.fake_dashboard:app --port 9900          # mock dashboard
 .venv\Scripts\python -m tests.seed_fake_messages                             # fake channel messages
 .venv\Scripts\python run.py                                                  # panel on :8800

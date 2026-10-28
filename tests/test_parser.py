@@ -26,7 +26,15 @@ def test_parse():
     assert r["plot"] == "38" and r["area"] == 629 and r["day_count"] == 20
     assert r["project_reserved"] == 482 and r["project_total"] == 495
     assert parsed[3]["features"] == "🔷 ناصية | 🌳 حديقة"
-    assert len({plot_key(p) for p in parsed if p}) == 5
+    assert len({plot_key(p) for p in parsed if p}) == 6
+
+
+def test_counter_67():
+    """The message behind today's gap (msg 16244): raw Telegram text, no URL after the last line."""
+    r = parse_reservation(messages()[-1])
+    assert (r["day_count"], r["city"], r["sector"]) == (67, "العاشر من رمضان", "منطقة المال و الاعمال(عمارات)")
+    assert (r["block"], r["plot"], r["area"]) == ("منطقة المال و الاعمال - منطقة CA", "31", 500)
+    assert (r["down_payment"], r["project_reserved"], r["project_total"]) == ("31K $", 102, 473)
 
 
 def test_normalize():

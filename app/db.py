@@ -89,20 +89,42 @@ def log(action: str, plot_id: int | None = None, detail: str = "") -> None:
 
 
 def insert_plot(msg_id: int, posted_at: str, r: dict, key: str, raw: str) -> int | None:
-    """Insert a parsed reservation. Returns the row id, or None if the message was already saved."""
-    if q("SELECT 1 FROM plots WHERE msg_id=?", (msg_id,)):
-        return None
-    dup = q("SELECT id FROM plots WHERE plot_key=? AND status!='duplicate' LIMIT 1", (key,))
+    """Insert a parsed reservation. Returns the row id, or None if the message was already saved.
+
+    The live handler, catch-up and resync can save the same message concurrently, so dedupe is
+    INSERT OR IGNORE on the UNIQUE msg_id, not check-then-insert.
+    """
+    dup = q("SELECT id FROM plots WHERE plot_key=? AND status!='duplicate' AND msg_id!=? LIMIT 1", (key, msg_id))
     status, note = ("duplicate", f"نفس القطعة اتسجلت قبل كده (#{dup[0]['id']})") if dup else ("pending", None)
     t = now()
-    return x(
-        """INSERT INTO plots(msg_id,posted_at,day_count,city,sector,block,plot,area,features,
-           down_payment,project_reserved,project_total,plot_key,status,note,raw,created_at,updated_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (msg_id, posted_at, r["day_count"], r["city"], r["sector"], r["block"], r["plot"],
-         r["area"], r["features"], r["down_payment"], r["project_reserved"], r["project_total"],
-         key, status, note, raw, t, t),
-    )
+    with _lock:
+        cur = _conn.execute(
+            """INSERT OR IGNORE INTO plots(msg_id,posted_at,day_count,city,sector,block,plot,area,features,
+               down_payment,project_reserved,project_total,plot_key,status,note,raw,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (msg_id, posted_at, r["day_count"], r["city"], r["sector"], r["block"], r["plot"],
+             r["area"], r["features"], r["down_payment"], r["project_reserved"], r["project_total"],
+             key, status, note, raw, t, t),
+        )
+        _conn.commit()
+        return cur.lastrowid if cur.rowcount else None
+
+
+def log_unparsed(msg_id: int, text: str) -> None:
+    """A message that looks like a reservation but didn't parse. Logged once per message."""
+    if not q("SELECT 1 FROM log WHERE action='unparsed' AND detail LIKE ?", (f"msg {msg_id}:%",)):
+        log("unparsed", detail=f"msg {msg_id}: {text[:200]}")
+
+
+def unparsed_today(day: str) -> list[dict]:
+    """Today's unparsed messages that still have no plot row (an edit or resync may have saved them since)."""
+    out = []
+    for r in q("SELECT at, detail FROM log WHERE action='unparsed' AND at LIKE ? ORDER BY id", (day + "%",)):
+        msg_id, _, text = r["detail"].partition(": ")
+        msg_id = int(msg_id.removeprefix("msg "))
+        if not q("SELECT 1 FROM plots WHERE msg_id=?", (msg_id,)):
+            out.append({"at": r["at"], "msg_id": msg_id, "text": text})
+    return out
 
 
 def update_plot(plot_id: int, **fields) -> None:

@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, time, timezone
+from time import monotonic
 
 from telethon import TelegramClient, events
 from telethon.tl.functions.messages import CheckChatInviteRequest
@@ -12,13 +13,17 @@ from . import db
 from .parser import parse_reservation, plot_key
 
 log = logging.getLogger("listener")
+RESYNC_EVERY = 120     # seconds between periodic resyncs of the latest messages
+RESYNC_LIMIT = 100     # how many recent channel messages a resync re-reads
+GAP_RESYNC_EVERY = 60  # a gap in the daily counter triggers a resync at most this often
+TICK = 15              # how often the resync loop wakes up to check
 SESSION = os.path.join(os.path.dirname(__file__), "..", "telegram")
 
 
 def make_client() -> TelegramClient:
     if not os.environ.get("TG_API_ID") or not os.environ.get("TG_API_HASH"):
         raise RuntimeError("TG_API_ID و TG_API_HASH مش متظبطين في ملف .env")
-    return TelegramClient(SESSION, int(os.environ["TG_API_ID"]), os.environ["TG_API_HASH"])
+    return TelegramClient(SESSION, int(os.environ["TG_API_ID"]), os.environ["TG_API_HASH"], catch_up=True)
 
 
 async def resolve_channel(client: TelegramClient, ref: str):
@@ -32,6 +37,10 @@ async def resolve_channel(client: TelegramClient, ref: str):
     return await client.get_entity(int(ref) if ref.lstrip("-").isdigit() else ref)
 
 
+def _today_utc() -> datetime:
+    return datetime.combine(datetime.now(db.TZ).date(), time.min, db.TZ).astimezone(timezone.utc)
+
+
 class Listener:
     def __init__(self, on_new_plot=None):
         self.client: TelegramClient | None = None
@@ -41,6 +50,8 @@ class Listener:
         self.last_message_at: str | None = None
         self.on_new_plot = on_new_plot  # async callback(plot_id), used for auto mode
         self._lock = asyncio.Lock()
+        self._resync_task: asyncio.Task | None = None
+        self._last_resync = 0.0
 
     async def _ensure_connected(self):
         if self.client is None:
@@ -57,6 +68,8 @@ class Listener:
             return None
         r = parse_reservation(msg.message)
         if not r:
+            if "تم حجز" in msg.message:  # looks like a reservation: never drop it silently
+                db.log_unparsed(msg.id, msg.message)
             return None
         posted = msg.date.astimezone(db.TZ).replace(tzinfo=None).isoformat(timespec="seconds")
         plot_id = db.insert_plot(msg.id, posted, r, plot_key(r), msg.message)
@@ -75,18 +88,53 @@ class Listener:
             log.exception("failed to save message %s", event.message.id)
             db.log("error", detail=f"msg {event.message.id}: {e}")
 
+    async def _save_all(self, messages) -> int:
+        """Save messages (a list or Telethon's async iterator), oldest first. Returns how many were new."""
+        if hasattr(messages, "__aiter__"):
+            messages = [m async for m in messages]
+        added = 0
+        for msg in messages:
+            if await self.save_message(msg):
+                added += 1
+        return added
+
     async def catch_up(self) -> int:
         """Fetch what was posted while we were stopped (or today's messages on first run)."""
         await self._ensure_connected()
         last_id = int(db.get_setting("last_msg_id", 0))
-        today = datetime.combine(datetime.now(db.TZ).date(), time.min, db.TZ).astimezone(timezone.utc)
-        added = 0
         # oldest first so the daily counter and "last_msg_id" advance in order
-        async for msg in self.client.iter_messages(self.channel, min_id=last_id, reverse=True,
-                                                   offset_date=None if last_id else today):
-            if await self.save_message(msg):
-                added += 1
+        return await self._save_all(self.client.iter_messages(
+            self.channel, min_id=last_id, reverse=True, offset_date=None if last_id else _today_utc()))
+
+    async def refetch_today(self) -> int:
+        """Re-read ALL of today's messages, ignoring last_msg_id. Safe: inserts are deduped by msg_id."""
+        await self._ensure_connected()
+        added = await self._save_all(self.client.iter_messages(self.channel, reverse=True, offset_date=_today_utc()))
+        db.log("refetch_today", detail=f"recovered {added}")
         return added
+
+    async def resync(self) -> int:
+        """Re-read the latest RESYNC_LIMIT messages. Push updates can be missed (short disconnect, sleep),
+        and a missed message can be older than last_msg_id, so this goes by recent window, not min_id."""
+        self._last_resync = monotonic()
+        await self._ensure_connected()
+        recent = [m async for m in self.client.iter_messages(self.channel, limit=RESYNC_LIMIT)]  # newest first
+        added = await self._save_all(recent[::-1])
+        if added:
+            db.log("resync_recovered", detail=f"recovered {added}")
+        return added
+
+    async def _resync_loop(self):
+        while True:
+            await asyncio.sleep(TICK)
+            since = monotonic() - self._last_resync
+            gap = db.missing_day_counts(datetime.now(db.TZ).date().isoformat())
+            if since >= RESYNC_EVERY or (gap and since >= GAP_RESYNC_EVERY):
+                try:
+                    await self.resync()
+                except Exception as e:
+                    log.exception("resync failed")
+                    db.log("error", detail=f"resync: {e}")
 
     async def start(self) -> int:
         async with self._lock:
@@ -96,9 +144,12 @@ class Listener:
             try:
                 await self._ensure_connected()
                 self.client.add_event_handler(self._on_message, events.NewMessage(chats=self.channel))
+                await self.client.catch_up()  # replay queued updates, now that the handler can see them
                 self.running = True
                 db.set_setting("listener_enabled", 1)
                 added = await self.catch_up()
+                self._last_resync = monotonic()
+                self._resync_task = asyncio.create_task(self._resync_loop())
                 db.log("listener_start", detail=f"caught up {added}")
                 return added
             except Exception as e:
@@ -107,6 +158,9 @@ class Listener:
 
     async def stop(self):
         async with self._lock:
+            if self._resync_task:
+                self._resync_task.cancel()
+                self._resync_task = None
             if self.client:
                 self.client.remove_event_handler(self._on_message)
             self.running = False
@@ -114,5 +168,7 @@ class Listener:
             db.log("listener_stop")
 
     async def shutdown(self):
+        if self._resync_task:
+            self._resync_task.cancel()
         if self.client:
             await self.client.disconnect()

@@ -222,6 +222,7 @@ def state():
         "today": today,
         "counts": counts,
         "missing": db.missing_day_counts(today),
+        "unparsed": db.unparsed_today(today),
     }
 
 
@@ -309,6 +310,15 @@ def reset(plot_id: int):
 async def start():
     try:
         return {"caught_up": await listener.start()}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/listener/refetch-today")
+async def refetch_today():
+    """Recover gaps: re-read all of today's channel messages, ignoring last_msg_id."""
+    try:
+        return {"added": await listener.refetch_today()}
     except Exception as e:
         raise HTTPException(400, str(e))
 

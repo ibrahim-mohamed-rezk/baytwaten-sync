@@ -54,6 +54,10 @@
   #toast { position:fixed; bottom:20px; left:20px; background:var(--text); color:#fff; padding:10px 16px;
            border-radius:8px; opacity:0; transition:.2s; pointer-events:none; }
   #toast.show { opacity:1; }
+  #missingBox button { margin-inline-start:8px; }
+  #unparsedBox summary { cursor:pointer; }
+  pre.raw { white-space:pre-wrap; background:#fff; border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+            margin:8px 0 0; font:13px/1.5 "Segoe UI", Tahoma, sans-serif; color:var(--text); }
   .modal { position:fixed; inset:0; background:#1d243366; display:flex; align-items:center; justify-content:center;
            z-index:10; padding:16px; }
   .modal[hidden] { display:none; }
@@ -80,7 +84,13 @@
 </header>
 <main>
   <div id="errorBox" class="alert err"></div>
-  <div id="missingBox" class="alert"></div>
+  <div id="missingBox" class="alert">
+    <span id="missingText"></span>
+    <button id="refetchBtn" title="بيقرا كل رسايل النهارده من القناة تاني، ومش هيكرر اللي اتسجل">🔁 هات الرسايل الناقصة</button>
+  </div>
+  <div id="unparsedBox" class="alert err">
+    <details><summary id="unparsedTitle"></summary><div id="unparsedList"></div></details>
+  </div>
   <div id="dashBox" class="alert">الربط مع الداشبورد لسه مش جاهز. لحد ما يجهز: اضغط على رقم القطعة عشان تنسخه، حدّثها في الداشبورد، وبعدين اضغط "تم يدوي".</div>
 
   <div class="stats" id="stats"></div>
@@ -149,8 +159,16 @@ async function loadState() {
   $("errorBox").style.display = L.error ? "block" : "none";
   $("errorBox").textContent = L.error ? "⚠️ " + L.error : "";
   $("missingBox").style.display = state.missing.length ? "block" : "none";
-  $("missingBox").textContent = state.missing.length
+  $("missingText").textContent = state.missing.length
     ? `⚠️ في رسايل ماوصلتش النهارده (حسب عداد "إجمالي اليوم"): ${state.missing.join("، ")}` : "";
+  const un = state.unparsed || [], unKey = un.map(u => u.msg_id).join(",");
+  $("unparsedBox").style.display = un.length ? "block" : "none";
+  if ($("unparsedBox")._key !== unKey) {  // don't re-render every poll, it would collapse the details
+    $("unparsedBox")._key = unKey;
+    $("unparsedTitle").textContent = `⚠️ في ${un.length} رسالة مااتقرتش (شكلها حجز بس الشكل بتاعها مختلف). دوس عشان تشوفها`;
+    $("unparsedList").innerHTML = un.map(u =>
+      `<pre class="raw"><b>#${u.msg_id} – ${esc(u.at.slice(11, 16))}</b>\n${esc(u.text)}</pre>`).join("");
+  }
   $("dashBox").style.display = state.dashboard_configured ? "none" : "block";
   $("autoMode").checked = state.auto_mode;
   $("autoMode").disabled = !state.dashboard_configured;
@@ -270,7 +288,15 @@ $("verifyAll").onclick = async () => {
     await refresh();
   }
 };
-$("verifyClose").onclick = () => { $("verifyModal").hidden = true; };
+$("refetchBtn").onclick = async () => {
+  $("refetchBtn").disabled = true;
+  try { const r = await api("/api/listener/refetch-today", "POST"); toast(r.added ? `✅ رجعت ${r.added} رسالة ناقصة` : "مفيش رسايل ناقصة في القناة نفسها"); }
+  catch (err) { toast("⚠️ " + err.message); }
+  $("refetchBtn").disabled = false;
+  await refresh();
+};
+
+$("verifyClose").onclick =() => { $("verifyModal").hidden = true; };
 
 let searchTimer;
 $("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadRows, 300); };
