@@ -2,6 +2,9 @@
 import asyncio
 from dotenv import load_dotenv
 
+from app.console import utf8_console
+
+utf8_console()
 load_dotenv()
 from app.listener import make_client, resolve_channel  # noqa: E402
 import os  # noqa: E402

@@ -7,6 +7,9 @@ from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
+from app.console import utf8_console
+
+utf8_console()
 load_dotenv()
 from app.listener import Listener  # noqa: E402
 from tests.test_parser import messages  # noqa: E402

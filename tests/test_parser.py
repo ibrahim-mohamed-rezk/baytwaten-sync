@@ -2,8 +2,11 @@
 import re
 from pathlib import Path
 
+from app.console import utf8_console
 from app.dashboard import match
 from app.parser import normalize, parse_reservation, plot_key
+
+utf8_console()
 
 PREFIX = re.compile(r"^\[[^\]]+\] [^:]+: ", re.M)
 

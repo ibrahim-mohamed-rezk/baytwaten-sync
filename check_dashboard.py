@@ -8,6 +8,9 @@ import sys
 
 from dotenv import load_dotenv
 
+from app.console import utf8_console
+
+utf8_console()
 load_dotenv()
 from app import dashboard  # noqa: E402
 
