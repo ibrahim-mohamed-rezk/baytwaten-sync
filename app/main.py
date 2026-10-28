@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse  # noqa: E402
 
 from . import dashboard, db  # noqa: E402
 from .listener import Listener  # noqa: E402
+from .parser import normalize  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 STATIC = Path(__file__).resolve().parent / "static"
@@ -80,9 +81,14 @@ async def approve(plot_id: int, by: str = "manual", force_id: str | None = None,
     try:
         target, _, c, reason = await find_target(plot, force_id, cached)
         if c:
+            why = []
+            if not dashboard.area_matches(c, plot):
+                why.append(f"المساحة في الداشبورد {c['area']}م² وفي التليجرام {plot['area']:g}م²")
+            if normalize(c["region"]) != normalize(plot["sector"]):
+                why.append(f"المنطقة في الداشبورد اسمها \"{c['region']}\" ({c['area']}م²)")
             db.update_plot(plot_id, status="failed", suggest_id=c["id"], suggest_region=c["region"],
-                           note=f"المنطقة في الداشبورد اسمها \"{c['region']}\" ({c['area']}م²). "
-                                f"لو هي نفسها اضغط \"اربط وحدّث\"")
+                           note=f"القطعة #{c['id']} ({c['plot']}): " + "، و".join(why)
+                                + ". لو هي نفس القطعة اضغط \"اربط وحدّث\"")
             db.log("approve_unsure", plot_id, f"{by}: suggest #{c['id']}")
             return _get_plot(plot_id)
         if not target:

@@ -211,10 +211,20 @@ def _split_plot(s: str | None) -> tuple[str, str | None] | None:
     return str(int(m.group(2))), m.group(1) or m.group(3) or m.group(4)
 
 
+# Neighborhood code at the end of a block/region/المجاورة: Latin letters or digits after منطقة/المجاورة.
+# Spaces are dropped, so "منطقة ( T I)" -> "ti", "الحى 24 -منطقة TJ" -> "tj", "المجاورة ٥" -> "5".
+CODE = re.compile(r"(?:منطقه|مجاوره)\s+([a-z0-9]+(?:\s+[a-z0-9]+)*)$")
+
+
+def _code(s: str | None) -> str | None:
+    m = CODE.search(normalize(s))
+    return m.group(1).replace(" ", "") if m else None
+
+
 def same_plot_number(dash_plot: str, tg_plot: str, tg_block: str | None = None) -> bool:
-    """Some cities keep the neighborhood in the plot number ("163-5", "163A") while Telegram sends
-    the bare "163" and puts the neighborhood in المربع ("المجاورة 5"). The suffix must then equal the
-    block's last token; a different neighborhood never matches."""
+    """Some cities keep the neighborhood in the plot number ("163-5", "163A", "TI38") while Telegram sends
+    the bare number and puts the neighborhood in المربع ("المجاورة 5", "منطقة ( T I)"). The dashboard
+    suffix must then equal the block's last token or its neighborhood code; a different neighborhood never matches."""
     a, b = _split_plot(dash_plot), _split_plot(tg_plot)
     if not (a and b):
         return normalize(dash_plot) == normalize(tg_plot)
@@ -223,20 +233,36 @@ def same_plot_number(dash_plot: str, tg_plot: str, tg_block: str | None = None) 
     if a[1] == b[1]:
         return True
     block = normalize(tg_block).split()
-    return b[1] is None and bool(block) and a[1] == block[-1]
+    return b[1] is None and a[1] in {block[-1] if block else None, _code(tg_block)} - {None}
+
+
+def _neighborhood(c: dict) -> str | None:
+    """A dashboard row's neighborhood code: from the plot number, else المجاورة, else the region."""
+    split = _split_plot(c["plot"])
+    return (split and split[1]) or _code(c.get("neighborhood")) or _code(c.get("region"))
+
+def area_matches(c: dict, plot: dict) -> bool:
+    """Telegram rounds the area (594 vs 594.20), so < 1 m². Unknown on either side doesn't count against it."""
+    return not (c.get("area") and plot.get("area")) or abs(c["area"] - plot["area"]) < 1
+
 
 def match(plot: dict, candidates: list[dict], region_alias: str | None = None) -> tuple[list[dict], bool]:
     """Narrow search results down to the plot from the Telegram message.
 
-    Returns (candidates, confident). Confident = city, region and plot number all agree
-    (Telegram 🏙 = الموقع, 🏘 = المنطقة). Area breaks ties (Telegram rounds: 594 vs 594.20).
+    Returns (candidates, confident). Confident = city, region, plot number (with neighborhood) and area all
+    agree (Telegram 🏙 = الموقع, 🏘 = المنطقة). Area also breaks ties (Telegram rounds: 594 vs 594.20).
     The region may also equal the block's part before " - ": 🏘 "المحور المركزى" with block
     "المحور المركزى الثانى - منطقة D" is the dashboard's "المحور المركزى الثانى". Exact match only, no prefix guessing.
+    A row whose neighborhood code contradicts Telegram's (TJ vs "منطقة ( T I)") is never a candidate,
+    not even as a suggestion.
     """
-    same = [c for c in candidates
-            if same_plot_number(c["plot"], plot["plot"], plot.get("block"))
-            and normalize(c["city"]) == normalize(plot["city"])]
     block = plot.get("block") or ""
+    tg_split = _split_plot(plot["plot"])
+    tg_code = (tg_split and tg_split[1]) or _code(block)
+    same = [c for c in candidates
+            if same_plot_number(c["plot"], plot["plot"], block)
+            and normalize(c["city"]) == normalize(plot["city"])
+            and not (tg_code and _neighborhood(c) not in (None, tg_code))]
     wanted = {normalize(plot["sector"]), normalize(block), normalize(re.split(r"\s+[-–]\s+", block)[0])}
     if region_alias:
         wanted.add(normalize(region_alias))
@@ -244,4 +270,4 @@ def match(plot: dict, candidates: list[dict], region_alias: str | None = None) -
     pool = by_region or same
     if len(pool) > 1 and plot.get("area"):
         pool = [c for c in pool if c.get("area") and abs(c["area"] - plot["area"]) < 1] or pool
-    return pool, bool(by_region) and len(pool) == 1
+    return pool, bool(by_region) and len(pool) == 1 and area_matches(pool[0], plot)

@@ -118,6 +118,33 @@ def test_match_prefix_rows():
     assert match(tg, rows)[0] == []
 
 
+def test_match_spaced_neighborhood_code():
+    """Real العبور rows for q=38 (2026-10-28). Telegram writes the code with a space: "منطقة ( T I)".
+    It used to fall back to the bare "38" in district TJ and suggest that one."""
+    rows = [{"id": i, "plot": p, "city": "العبور الجديده", "region": r, "neighborhood": n, "area": a,
+             "status": "reserved"} for i, p, r, n, a in [
+        (22875, "38", "الحى 24 -منطقة TJ", "—", 481.6),
+        (3310, "TG38", "الحى الرابع و العشرون", "المجاورة TG", 645.8),
+        (3172, "TH38", "الحى الرابع و العشرون", "المجاورة TH", 500.0),
+        (3047, "TI38", "الحى الرابع و العشرون", "المجاورة TI", 645.8),
+        (2931, "TF38", "الحى الرابع و العشرون", "المجاورة TF", 628.6)]]
+    tg = {"city": "العبور الجديدة", "sector": "الحى الرابع و العشرون", "plot": "38", "area": 629}
+    # TF38 is 628.6 m² ~ 629 -> confident. TI38 is 645.8 m² -> right plot, but unsure until confirmed.
+    for code, want, sure in (("( T I)", 3047, False), ("( T F)", 2931, True)):
+        tg["block"] = f"الحى الرابع و العشرون - منطقة {code}"
+        pool, confident = match(tg, rows)
+        assert [c["id"] for c in pool] == [want] and confident == sure, (code, pool, confident)
+    tg["block"], tg["area"] = "الحى الرابع و العشرون - منطقة ( T I)", 645
+    assert match(tg, rows)[1], "within 1 m² -> confident"
+    tg["area"] = 629
+    # a code the dashboard doesn't have -> nothing, and never the TJ plot as a suggestion
+    tg["block"] = "الحى الرابع و العشرون - منطقة ( T K)"
+    assert match(tg, rows)[0] == []
+    # Telegram's own TJ block still finds the bare "38" in district TJ
+    tg.update(sector="الحى 24 -منطقة TJ", block="المنطقة TJ", area=481)
+    assert [c["id"] for c in match(tg, rows)[0]] == [22875]
+
+
 def test_match_region_from_block():
     """Real السادات rows (2026-10-28): 🏘 says "المحور المركزى" but the dashboard region is the block's
     part before " - "."""

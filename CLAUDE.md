@@ -95,11 +95,18 @@ UI text is Egyptian Arabic, RTL.
   - Needs the session cookie plus an `X-CSRF-TOKEN` header (taken from `<meta name="csrf-token">` on any page).
   - Response: `{success:true, message:"تم التحديث بنجاح", plot:{id, plot_number, area, status:"reserved", land_zone_id, ...}}`.
 - Matching: Telegram 🏙 = الموقع, 🏘 = المنطقة. Areas are rounded in Telegram (594 vs 594.20), so the tolerance is < 1 m².
+  - **Confident needs the area too** (decided with the user): city, region, number+neighborhood and area within 1 m².
+    A right-looking plot with a different area (#90: TI39 is 583.3 m², Telegram says 685) becomes `failed` with
+    `suggest_id`. The note says what differs, and you confirm with "اربط وحدّث". Unknown area on either side doesn't block.
   - Some cities keep the neighborhood in the plot number, after it (السادات `163-5`, أسيوط الجديدة `163A`) or
     before it (العاشر من رمضان `CA23`, السادات المحور المركزى `D29`). Telegram
     sends the bare `163` and puts the neighborhood in المربع (`المجاورة 5`). `same_plot_number()` splits a number
     into (base, suffix) and matches when the bases agree and either the suffixes are equal or Telegram has none and
     the dashboard suffix equals the block's last token. A different neighborhood never matches.
+  - Neighborhood code (`_code`): Latin letters or digits after منطقة/المجاورة at the end of a block, region or
+    المجاورة, with spaces dropped. Telegram writes some codes spaced: "منطقة ( T I)" -> `ti` (the dashboard has `TI38`).
+    A candidate whose own code (from its plot number, المجاورة or region) contradicts Telegram's is dropped
+    entirely, not even suggested. Before this, a bare `38` in district TJ was suggested for "( T I)".
   - The region matches if it equals 🏘, the whole block, or the block's part before " - ". Example: السادات 🏘
     "المحور المركزى" with block "المحور المركزى الثانى - منطقة D" matches the region "المحور المركزى الثانى".
     These are exact (normalized) comparisons, never prefix guessing.

@@ -110,6 +110,11 @@ async def test_approve_unchanged():
     assert fake.POSTS == ["9414"] and fake.PLOTS["9414"]["status"] == "reserved"
     r = await main.approve(mismatch)
     assert (r["status"], r["suggest_id"]) == ("failed", "8908"), r
+    # right region and number, but Telegram says 685 m² and the dashboard 583.3 -> suggest, don't reserve
+    p = add_plot("العبور الجديدة", "الحى 24 -منطقة TJ", "777", 685)
+    r = await main.approve(p)
+    assert (r["status"], r["suggest_id"]) == ("failed", "8909") and "المساحة" in r["note"], r
+    assert "8909" not in fake.POSTS and fake.PLOTS["8909"]["status"] == "available"
 
 
 async def run():

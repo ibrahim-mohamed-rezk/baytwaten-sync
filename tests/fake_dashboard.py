@@ -14,6 +14,7 @@ PLOTS = {
   # two identical candidates -> ambiguous; one reserved plot only reachable through a region alias
   "8906": dict(plot="500", phase="1", city="العبور الجديدة", region="الحى الخامس", nb="", area=400, status="reserved"),
   "8907": dict(plot="500", phase="1", city="العبور الجديدة", region="الحى الخامس", nb="", area=400, status="reserved"),
+  "8909": dict(plot="777", phase="1", city="العبور الجديدة", region="الحى 24 -منطقة TJ", nb="", area=583.3, status="available"),
   "8908": dict(plot="612", phase="1", city="العبور الجديدة", region="الحى 24 -منطقة TJ", nb="", area=500, status="reserved"),
 }
 SESS = "s3cret"; CSRF = "tok123"
