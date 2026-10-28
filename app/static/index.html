@@ -69,7 +69,7 @@
   .bar div { height:100%; width:0; background:var(--blue); transition:width .3s; }
   .bar.finished div { background:var(--green); }
   .progress-nums { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); margin:8px 0 14px; }
-  .modal .foot { display:flex; justify-content:flex-start; }
+  .modal .foot { display:flex; justify-content:flex-start; gap:8px; }
 </style>
 </head>
 <body>
@@ -116,6 +116,13 @@
   </div>
 </main>
 <div id="toast"></div>
+<div id="confirmModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+  <div class="box">
+    <h2 id="confirmTitle"></h2>
+    <p id="confirmMsg"></p>
+    <div class="foot"><button id="confirmOk" class="ok"></button><button id="confirmCancel">لأ، رجوع</button></div>
+  </div>
+</div>
 <div id="verifyModal" class="modal" hidden>
   <div class="box">
     <h2>🔄 مراجعة مع الداشبورد</h2>
@@ -247,12 +254,36 @@ $("autoMode").onchange = async e => {
 };
 
 $("approveAll").onclick = async () => {
-  if (!confirm("تحدّث كل القطع المنتظرة في الداشبورد؟")) return;
+  const n = state?.counts?.pending || 0;
+  if (!await askConfirm("✅ تحديث كل المنتظر",
+      `هيدوّر على ${n} قطعة منتظرة في الداشبورد، واللي متاحة ومطابقة 100% هتتحجز هناك على طول. اللي فيها أي شك هتروح "محتاج مراجعة".`,
+      `أيوه، حدّث ${n} قطعة`)) return;
   $("approveAll").disabled = true;
   const r = await api("/api/plots/approve-pending", "POST").catch(err => (toast("⚠️ " + err.message), null));
   if (r) toast(`✅ ${r.done} اتحدّثت – ⚠️ ${r.failed} محتاجة مراجعة`);
   await refresh();
 };
+
+// In-page replacement for window.confirm(). Resolves true on OK, false on cancel / Esc / click outside.
+function askConfirm(title, msg, okLabel = "أيوه") {
+  const m = $("confirmModal");
+  $("confirmTitle").textContent = title;
+  $("confirmMsg").textContent = msg;
+  $("confirmOk").textContent = okLabel;
+  m.hidden = false;
+  $("confirmCancel").focus();  // the safe choice is the default
+  return new Promise(resolve => {
+    const done = ok => {
+      m.hidden = true;
+      m.onclick = $("confirmOk").onclick = $("confirmCancel").onclick = document.onkeydown = null;
+      resolve(ok);
+    };
+    $("confirmOk").onclick = () => done(true);
+    $("confirmCancel").onclick = () => done(false);
+    m.onclick = e => { if (e.target === m) done(false); };
+    document.onkeydown = e => { if (e.key === "Escape") done(false); };
+  });
+}
 
 function showProgress(b, finished) {
   const pct = b.total ? Math.round(100 * b.checked / b.total) : 100;
