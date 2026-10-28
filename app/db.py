@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data.sqlite3"
+DB_PATH = Path(os.environ.get("SYNC_DB_PATH") or Path(__file__).resolve().parent.parent / "data.sqlite3")
 _lock = threading.Lock()
 TZ = ZoneInfo(os.environ.get("TZ_NAME", "Africa/Cairo"))
 

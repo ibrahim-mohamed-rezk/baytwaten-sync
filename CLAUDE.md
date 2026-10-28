@@ -24,18 +24,34 @@ UI text is Egyptian Arabic, RTL.
   `normalize()` folds Arabic variants (ة/ه, ى/ي, أ/ا, digits, punctuation). `plot_key` = city|sector|block|plot.
   Hourly "🔥 الأكثر حجزًا" summaries are ignored.
 - `app/listener.py`: Telethon client. Resolves the invite link via `CheckChatInviteRequest`, then runs a NewMessage handler and `catch_up()`.
-- `app/db.py`: SQLite (`data.sqlite3`). Tables: `plots`, `settings`, `region_aliases`, `log`.
+- `app/db.py`: SQLite (`data.sqlite3`, overridable with `SYNC_DB_PATH`, which tests use). Tables: `plots`, `settings`, `region_aliases`, `log`.
   - Plot statuses: pending | done | rejected | failed | duplicate.
   - `missing_day_counts()` uses the channel's sequential "إجمالي اليوم" counter to detect missed messages.
   - Small ALTER-based migrations live in the module body.
 - `app/dashboard.py`: the dashboard client. See "Dashboard facts" below.
-- `app/main.py`: FastAPI app. `approve()` is the core decision logic. `/api/*` endpoints. Auto mode is handled in `on_new_plot`.
+- `app/main.py`: FastAPI app and `/api/*` endpoints.
+  - `find_target(plot)` is the read-only lookup: search + `match()`, returns `(target, confident, suggestion, reason)`.
+  - `approve()` builds on it and reserves. Anything doubtful becomes `failed`.
+  - `verify()` builds on it and is **read-only**. It never sends update-status and never marks `failed`.
+    A pending plot whose confident single match is already `reserved` in the dashboard becomes `done`
+    (note "كانت محجوزة في الداشبورد (اتشافت تلقائي)", log `auto_verified`). Anything else, errors included,
+    leaves the row untouched; errors are logged as `verify_error`. Skipped when the dashboard isn't configured.
+  - Background worker: one `asyncio.Queue` started in the lifespan. `on_new_plot` only enqueues, so `catch_up()`
+    and `/api/listener/start` never wait on the dashboard. A new plot runs `approve()` in auto mode, `verify()`
+    otherwise. Jobs run one at a time, `JOB_DELAY` (0.3s) apart. Searches are cached per plot number for
+    `SEARCH_TTL` (60s) in queued jobs; manual approve always searches fresh. A plot is queued once at a time.
+  - Every `RECHECK_EVERY` (5 min) all still-pending rows are queued for `verify()`, to catch plots reserved by
+    hand in the dashboard after the message arrived. `POST /api/plots/verify-pending` (panel button
+    "🔄 راجع مع الداشبورد") does the same and waits, returning `{checked, done}`.
+    `/api/state.queue` drives the header pill "بيراجع مع الداشبورد… (N)".
 - `app/static/index.html`: the panel. Vanilla JS, polls `/api/state` and `/api/plots` every 5s.
 - `check_dashboard.py`: read-only connection check (login + search, prints parsed rows, dumps `debug_page.html` if nothing parsed).
 - `tests/`:
   - `test_parser.py`: plain asserts, run with `python -m tests.test_parser`.
   - `sample_messages.txt`: real channel messages.
-  - `fake_dashboard.py`: mock of the Laravel dashboard.
+  - `test_verify.py`: verify/worker flow against `fake_dashboard` served in-process (`httpx.ASGITransport`)
+    with a temp DB. Run with `python -m tests.test_verify`.
+  - `fake_dashboard.py`: mock of the Laravel dashboard. `POSTS` records every update-status call.
   - `seed_fake_messages.py`: pushes the samples through the listener with no Telegram account.
 
 ## Dashboard facts (from the user's DevTools captures)
@@ -67,9 +83,9 @@ already reserved).
 `check_dashboard.py 163` verified against the real dashboard: login and table parsing work. Its rows exposed the
 neighborhood-in-plot-number case, now covered by `test_match_real_rows`.
 
-**Not yet verified against the real systems:**
-1. A real reserve POST from the panel.
-2. The real Telethon connection to the private channel (`login.py`, then ▶ in the panel).
+A real reserve POST from the panel works, and ▶ catches up on the real channel over Telethon.
+Catch-up exposed that most of the day's plots were already reserved by hand, which led to the read-only `verify()` flow.
+That flow is tested against the fake dashboard only; it hasn't run against the real dashboard yet.
 
 Next ideas, only if the user asks:
 - Use `zone_id` in the search instead of local filtering.
@@ -81,6 +97,7 @@ Next ideas, only if the user asks:
 ```
 python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python -m tests.test_parser
+.venv\Scripts\python -m tests.test_verify
 .venv\Scripts\python -m uvicorn tests.fake_dashboard:app --port 9900          # mock dashboard
 .venv\Scripts\python -m tests.seed_fake_messages                             # fake channel messages
 .venv\Scripts\python run.py                                                  # panel on :8800

@@ -21,6 +21,7 @@
   button:disabled { opacity:.5; cursor:not-allowed; }
   .pill { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px;
           font-size:13px; background:#eef0f5; }
+  .pill[hidden] { display:none; }
   .dot { width:9px; height:9px; border-radius:50%; background:var(--gray); }
   .on .dot { background:var(--green); box-shadow:0 0 0 3px #16a34a33; }
   main { padding:16px 20px; max-width:1400px; margin:auto; }
@@ -60,6 +61,7 @@
   <h1>لوحة الأوتوميشن – حجوزات بيت الوطن</h1>
   <span id="listenerPill" class="pill"><span class="dot"></span><span id="listenerText">…</span></span>
   <button id="listenerBtn">…</button>
+  <span id="queuePill" class="pill" hidden title="بيشوف القطع المنتظرة لو كانت اتحجزت في الداشبورد خلاص">🔄 <span id="queueText"></span></span>
   <span class="pill" title="تحديث الداشبورد تلقائي للقطع المطابقة 100%">
     <label><input type="checkbox" id="autoMode"> تحديث تلقائي</label>
   </span>
@@ -76,6 +78,7 @@
     <input type="search" id="search" placeholder="بحث برقم القطعة أو المنطقة…">
     <label><input type="checkbox" id="todayOnly" checked> النهارده بس</label>
     <span style="flex:1"></span>
+    <button id="verifyAll" title="بيشوف بس، مش بيغيّر حاجة في الداشبورد">🔄 راجع مع الداشبورد</button>
     <button class="ok" id="approveAll">✅ حدّث كل المنتظر</button>
   </div>
 
@@ -131,6 +134,9 @@ async function loadState() {
   $("autoMode").checked = state.auto_mode;
   $("autoMode").disabled = !state.dashboard_configured;
   $("approveAll").disabled = !state.dashboard_configured || !state.counts.pending;
+  if (!$("verifyAll")._busy) $("verifyAll").disabled = !state.dashboard_configured;
+  $("queuePill").hidden = !state.queue;
+  $("queueText").textContent = `بيراجع مع الداشبورد… (${state.queue})`;
   const c = state.counts, total = Object.values(c).reduce((a, b) => a + b, 0);
   $("stats").innerHTML = [["حجوزات النهارده", total], ["منتظر", c.pending || 0], ["اتحدّث", c.done || 0],
     ["محتاج مراجعة", c.failed || 0], ["آخر رسالة", L.last_message_at ? L.last_message_at.slice(11, 16) : "—"]]
@@ -206,6 +212,16 @@ $("approveAll").onclick = async () => {
   $("approveAll").disabled = true;
   const r = await api("/api/plots/approve-pending", "POST").catch(err => (toast("⚠️ " + err.message), null));
   if (r) toast(`✅ ${r.done} اتحدّثت – ⚠️ ${r.failed} محتاجة مراجعة`);
+  await refresh();
+};
+
+$("verifyAll").onclick = async () => {
+  const b = $("verifyAll");
+  b.disabled = b._busy = true;
+  toast("🔄 بيراجع القطع المنتظرة مع الداشبورد…");
+  const r = await api("/api/plots/verify-pending", "POST").catch(err => (toast("⚠️ " + err.message), null));
+  if (r) toast(`✅ ${r.done} من ${r.checked} كانت محجوزة في الداشبورد واتعلّمت "اتحدّث"`);
+  b._busy = false; b.disabled = !state?.dashboard_configured;
   await refresh();
 };
 

@@ -11,8 +11,13 @@ PLOTS = {
   "8905": dict(plot="271", phase="المرحلة الأولى", city="العبور الجديدة", region="الحى 24 -منطقة TJ", nb="", area=500, status="available"),
   "7001": dict(plot="38", phase="1", city="العبور الجديدة", region="الحى الرابع والعشرون منطقة TF", nb="", area=629, status="available"),
   "7002": dict(plot="38", phase="1", city="السادات", region="المحور المركزى", nb="", area=500, status="reserved"),
+  # two identical candidates -> ambiguous; one reserved plot only reachable through a region alias
+  "8906": dict(plot="500", phase="1", city="العبور الجديدة", region="الحى الخامس", nb="", area=400, status="reserved"),
+  "8907": dict(plot="500", phase="1", city="العبور الجديدة", region="الحى الخامس", nb="", area=400, status="reserved"),
+  "8908": dict(plot="612", phase="1", city="العبور الجديدة", region="الحى 24 -منطقة TJ", nb="", area=500, status="reserved"),
 }
 SESS = "s3cret"; CSRF = "tok123"
+POSTS: list[str] = []  # ids that received update-status, so tests can prove a check stayed read-only
 def authed(req): return req.cookies.get("laravel_session") == SESS
 @app.get("/login", response_class=HTMLResponse)
 def login_page(): return f'<form method=post><input name="_token" value="{CSRF}"><input name=email><input name=password></form>'
@@ -37,5 +42,6 @@ def plots(req: Request, q: str = ""):
 async def upd(pid: str, req: Request):
     if not authed(req): return JSONResponse({"message": "Unauthenticated."}, 401)
     if req.headers.get("x-csrf-token") != CSRF: return JSONResponse({"message": "CSRF token mismatch."}, 419)
+    POSTS.append(pid)
     PLOTS[pid]["status"] = (await req.json())["status"]
     return {"success": True, "message": "تم التحديث بنجاح", "plot": {"id": int(pid), "status": PLOTS[pid]["status"]}}

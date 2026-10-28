@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +27,48 @@ def _get_plot(plot_id: int) -> dict:
     return rows[0]
 
 
-async def approve(plot_id: int, by: str = "manual", force_id: str | None = None) -> dict:
+SEARCH_TTL = 60      # seconds a search result is reused within a batch
+JOB_DELAY = 0.3      # pause between background jobs so we don't hammer the dashboard
+RECHECK_EVERY = 300  # re-verify rows still pending (someone may reserve them by hand later)
+_search_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+async def _search(number: str, cached: bool) -> list[dict]:
+    hit = _search_cache.get(number)
+    if cached and hit and time.monotonic() - hit[0] < SEARCH_TTL:
+        return hit[1]
+    rows = await dashboard.search(number)
+    _search_cache[number] = (time.monotonic(), rows)
+    return rows
+
+
+async def find_target(plot: dict, force_id: str | None = None,
+                      cached: bool = False) -> tuple[dict | None, bool, dict | None, str | None]:
+    """Read-only lookup of the dashboard plot for a Telegram row.
+
+    Returns (target, confident, suggestion, reason). target is set only for a confident single match
+    (or force_id); suggestion is the lone candidate in a differently named region; reason says why
+    there's no target. Network/auth errors propagate.
+    """
+    found = await _search(plot["plot"], cached)
+    if force_id:
+        target = next((c for c in found if c["id"] == force_id), None)
+        if not target:
+            return None, False, None, f"القطعة #{force_id} مش موجودة في الداشبورد"
+        return target, True, None, None
+    pool, confident = dashboard.match(plot, found, db.get_region_alias(plot["city"], plot["sector"]))
+    if not pool:
+        return None, False, None, f"مفيش قطعة رقم {plot['plot']} في {plot['city']} على الداشبورد"
+    if len(pool) > 1:
+        return None, False, None, "لقيت أكتر من قطعة مطابقة: " + "، ".join(
+            f"#{c['id']} {c['region']} {c['area']}م²" for c in pool)
+    if not confident:
+        return None, False, pool[0], None
+    return pool[0], True, None, None
+
+
+async def approve(plot_id: int, by: str = "manual", force_id: str | None = None,
+                  cached: bool = False) -> dict:
     """Find the plot in the dashboard and mark it reserved.
 
     Only acts when the match is certain; anything else becomes 'failed' with a note
@@ -35,27 +78,15 @@ async def approve(plot_id: int, by: str = "manual", force_id: str | None = None)
     if plot["status"] == "done":
         return plot
     try:
-        found = await dashboard.search(plot["plot"])
-        if force_id:
-            target = next((c for c in found if c["id"] == force_id), None)
-            if not target:
-                raise LookupError(f"القطعة #{force_id} مش موجودة في الداشبورد")
-        else:
-            pool, confident = dashboard.match(
-                plot, found, db.get_region_alias(plot["city"], plot["sector"]))
-            if not pool:
-                raise LookupError(f"مفيش قطعة رقم {plot['plot']} في {plot['city']} على الداشبورد")
-            if len(pool) > 1:
-                raise LookupError("لقيت أكتر من قطعة مطابقة: " + "، ".join(
-                    f"#{c['id']} {c['region']} {c['area']}م²" for c in pool))
-            if not confident:
-                c = pool[0]
-                db.update_plot(plot_id, status="failed", suggest_id=c["id"], suggest_region=c["region"],
-                               note=f"المنطقة في الداشبورد اسمها \"{c['region']}\" ({c['area']}م²). "
-                                    f"لو هي نفسها اضغط \"اربط وحدّث\"")
-                db.log("approve_unsure", plot_id, f"{by}: suggest #{c['id']}")
-                return _get_plot(plot_id)
-            target = pool[0]
+        target, _, c, reason = await find_target(plot, force_id, cached)
+        if c:
+            db.update_plot(plot_id, status="failed", suggest_id=c["id"], suggest_region=c["region"],
+                           note=f"المنطقة في الداشبورد اسمها \"{c['region']}\" ({c['area']}م²). "
+                                f"لو هي نفسها اضغط \"اربط وحدّث\"")
+            db.log("approve_unsure", plot_id, f"{by}: suggest #{c['id']}")
+            return _get_plot(plot_id)
+        if not target:
+            raise LookupError(reason)
 
         if target["status"] == "reserved":
             note = "كانت محجوزة أصلاً في الداشبورد"
@@ -63,6 +94,7 @@ async def approve(plot_id: int, by: str = "manual", force_id: str | None = None)
             raise LookupError(f"حالة القطعة في الداشبورد \"{target['status']}\"، مش متاحة")
         else:
             await dashboard.reserve(target["id"])
+            _search_cache.pop(plot["plot"], None)
             note = None
         db.update_plot(plot_id, status="done", dashboard_id=target["id"], note=note,
                        suggest_id=None, suggest_region=None)
@@ -75,11 +107,76 @@ async def approve(plot_id: int, by: str = "manual", force_id: str | None = None)
     return _get_plot(plot_id)
 
 
+async def verify(plot_id: int) -> dict | None:
+    """READ-ONLY: if a pending plot is already reserved in the dashboard, tick it off as done.
+
+    Never sends update-status and never marks 'failed': anything unclear leaves the row untouched.
+    """
+    rows = db.q("SELECT * FROM plots WHERE id=?", (plot_id,))
+    if not rows or rows[0]["status"] != "pending" or not dashboard.is_configured():
+        return rows[0] if rows else None
+    try:
+        target, confident, _, _ = await find_target(rows[0], cached=True)
+    except Exception as e:
+        db.log("verify_error", plot_id, str(e))
+        return rows[0]
+    if (target and confident and target["status"] == "reserved"
+            and _get_plot(plot_id)["status"] == "pending"):  # the user may have acted meanwhile
+        db.update_plot(plot_id, status="done", dashboard_id=target["id"],
+                       note="كانت محجوزة في الداشبورد (اتشافت تلقائي)")
+        db.log("auto_verified", plot_id, f"dashboard #{target['id']}")
+    return _get_plot(plot_id)
+
+
+# ---------- background jobs: one at a time, so catch-up never waits on the dashboard ----------
+
+_jobs: asyncio.Queue = asyncio.Queue()
+_queued: dict[int, asyncio.Future] = {}  # plot id -> resolved when its job finishes
+
+
+def enqueue(plot_id: int, kind: str = "verify") -> asyncio.Future:
+    """kind: 'new' (approve in auto mode, else verify) or 'verify'. A plot is queued only once."""
+    if plot_id not in _queued:
+        _queued[plot_id] = asyncio.get_running_loop().create_future()
+        _jobs.put_nowait((plot_id, kind))
+    return _queued[plot_id]
+
+
+def enqueue_pending() -> list[asyncio.Future]:
+    if not dashboard.is_configured():
+        return []
+    return [enqueue(r["id"]) for r in db.q("SELECT id FROM plots WHERE status='pending' ORDER BY msg_id")]
+
+
+async def worker():
+    while True:
+        plot_id, kind = await _jobs.get()
+        try:
+            if kind == "new" and db.get_setting("auto_mode") == "1" and dashboard.is_configured():
+                if db.q("SELECT 1 FROM plots WHERE id=? AND status='pending'", (plot_id,)):
+                    await approve(plot_id, by="auto", cached=True)
+            else:
+                await verify(plot_id)
+        except Exception as e:
+            logging.exception("job for plot %s failed", plot_id)
+            db.log("error", plot_id, f"job: {e}")
+        finally:
+            fut = _queued.pop(plot_id, None)
+            if fut and not fut.done():
+                fut.set_result(None)
+            _jobs.task_done()
+        await asyncio.sleep(JOB_DELAY)
+
+
+async def recheck_loop():
+    while True:
+        await asyncio.sleep(RECHECK_EVERY)
+        enqueue_pending()
+
+
 async def on_new_plot(plot_id: int):
-    """Auto mode: approve right away; anything not 100% clear ends up as 'failed' for review."""
-    if db.get_setting("auto_mode") == "1" and dashboard.is_configured():
-        if db.q("SELECT 1 FROM plots WHERE id=? AND status='pending'", (plot_id,)):
-            await approve(plot_id, by="auto")
+    """Queue it: auto mode approves, otherwise a read-only check ticks off plots already reserved."""
+    enqueue(plot_id, "new")
 
 
 listener = Listener(on_new_plot=on_new_plot)
@@ -87,12 +184,15 @@ listener = Listener(on_new_plot=on_new_plot)
 
 @asynccontextmanager
 async def lifespan(app):
+    tasks = [asyncio.create_task(worker()), asyncio.create_task(recheck_loop())]
     if db.get_setting("listener_enabled") == "1":
         try:
             await listener.start()
         except Exception as e:
             logging.error("listener didn't start: %s", e)
     yield
+    for t in tasks:
+        t.cancel()
     await listener.shutdown()
 
 
@@ -113,6 +213,7 @@ def state():
         "listener": {"running": listener.running, "error": listener.error,
                      "last_message_at": listener.last_message_at},
         "auto_mode": db.get_setting("auto_mode") == "1",
+        "queue": len(_queued),
         "dashboard_configured": dashboard.is_configured(),
         "dashboard_url": os.environ.get("DASHBOARD_BASE_URL", "").rstrip("/")
                          + f"/{os.environ.get('DASHBOARD_LOCALE', 'ar')}/dashboard/land_plots",
@@ -157,6 +258,17 @@ async def approve_all():
     results = [await approve(i) for i in ids]
     return {"done": sum(r["status"] == "done" for r in results),
             "failed": sum(r["status"] == "failed" for r in results)}
+
+
+@app.post("/api/plots/verify-pending")
+async def verify_pending():
+    """Read-only re-check of every pending row. Waits for the queue so it can report the count."""
+    if not dashboard.is_configured():
+        raise HTTPException(409, "لازم الربط مع الداشبورد يكون جاهز الأول")
+    ids = [r["id"] for r in db.q("SELECT id FROM plots WHERE status='pending'")]
+    await asyncio.gather(*enqueue_pending())
+    done = sum(_get_plot(i)["status"] == "done" for i in ids)
+    return {"checked": len(ids), "done": done}
 
 
 @app.post("/api/plots/{plot_id}/mark-done")
