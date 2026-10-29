@@ -65,6 +65,7 @@ class Listener:
             raise RuntimeError("لازم تسجل دخول التليجرام الأول: شغّل python login.py")
         if self.channel is None:
             self.channel = await resolve_channel(self.client, os.environ["TG_CHANNEL"])
+            db.set_setting("tg_channel_id", self.channel.id)  # for "open in Telegram" links, also while stopped
 
     async def save_message(self, msg) -> int | None:
         if not msg.message:
@@ -190,6 +191,13 @@ class Listener:
                 if new_gap := db.new_today("gap_notified", day, still):
                     notify("gap", "في رسايل ناقصة من القناة", "عداد إجمالي اليوم: " + "، ".join(sorted(new_gap, key=int))
                            + ". جرّب \"هات الرسايل الناقصة\"", level="warning", important=True)
+
+    async def fetch(self, ids: list[int]) -> dict:
+        """Read-only: the channel's current copy of these messages, {id: message}. Empty if not connected."""
+        if not ids or self.client is None or self.channel is None or not self.client.is_connected():
+            return {}
+        msgs = await self.client.get_messages(self.channel, ids=ids)
+        return {m.id: m for m in msgs if m}
 
     async def start(self) -> int:
         async with self._lock:

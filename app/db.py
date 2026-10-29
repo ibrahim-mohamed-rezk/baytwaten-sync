@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     read INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS notifications_read ON notifications(read, important);
+-- unparsed messages the user hid from the panel's alert (still listed on /unparsed)
+CREATE TABLE IF NOT EXISTS unparsed_dismissed (msg_id INTEGER PRIMARY KEY, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL, plot_id INTEGER, action TEXT NOT NULL, detail TEXT
@@ -125,19 +127,40 @@ def log_unparsed(msg_id: int, text: str) -> bool:
     """A message that looks like a reservation but didn't parse. Logged once per message; True if new."""
     if q("SELECT 1 FROM log WHERE action='unparsed' AND detail LIKE ?", (f"msg {msg_id}:%",)):
         return False
-    log("unparsed", detail=f"msg {msg_id}: {text[:200]}")
+    log("unparsed", detail=f"msg {msg_id}: {text}")  # the full text: /unparsed shows it
     return True
 
 
-def unparsed_today(day: str) -> list[dict]:
-    """Today's unparsed messages that still have no plot row (an edit or resync may have saved them since)."""
+def set_unparsed_text(msg_id: int, text: str) -> None:
+    """Replace a stored text (older rows kept only the first 200 characters)."""
+    x("UPDATE log SET detail=? WHERE action='unparsed' AND detail LIKE ?", (f"msg {msg_id}: {text}", f"msg {msg_id}:%"))
+
+
+def unparsed(day: str | None = None) -> list[dict]:
+    """Every unparsed message (or one day's), newest first, with whether it was hidden or saved as a plot since."""
+    rows = q("SELECT at, detail FROM log WHERE action='unparsed'" + (" AND at LIKE ?" if day else "") + " ORDER BY id DESC",
+             (day + "%",) if day else ())
+    hidden = {r["msg_id"] for r in q("SELECT msg_id FROM unparsed_dismissed")}
     out = []
-    for r in q("SELECT at, detail FROM log WHERE action='unparsed' AND at LIKE ? ORDER BY id", (day + "%",)):
+    for r in rows:
         msg_id, _, text = r["detail"].partition(": ")
         msg_id = int(msg_id.removeprefix("msg "))
-        if not q("SELECT 1 FROM plots WHERE msg_id=?", (msg_id,)):
-            out.append({"at": r["at"], "msg_id": msg_id, "text": text})
+        plot = q("SELECT id, plot, city, status FROM plots WHERE msg_id=?", (msg_id,))
+        out.append({"at": r["at"], "msg_id": msg_id, "text": text, "dismissed": msg_id in hidden,
+                    "plot": plot[0] if plot else None})
     return out
+
+
+def unparsed_today(day: str) -> list[dict]:
+    """The panel's alert: today's unparsed messages, minus those saved as a plot since or hidden by the user."""
+    return [u for u in reversed(unparsed(day)) if not u["plot"] and not u["dismissed"]]
+
+
+def dismiss_unparsed(msg_id: int, hide: bool = True) -> None:
+    if hide:
+        x("INSERT OR IGNORE INTO unparsed_dismissed(msg_id, at) VALUES(?,?)", (msg_id, now()))
+    else:
+        x("DELETE FROM unparsed_dismissed WHERE msg_id=?", (msg_id,))
 
 
 def update_plot(plot_id: int, **fields) -> None:

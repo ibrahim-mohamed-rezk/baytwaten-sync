@@ -91,11 +91,31 @@ async def test_unparsed_is_logged_once_and_clears_when_saved():
     lst = make_listener([broken])
     await lst.resync(); await lst.resync()
     [u] = db.unparsed_today(today)
-    assert u["msg_id"] == 300 and u["text"] == BROKEN[:200]
+    assert u["msg_id"] == 300 and u["text"] == BROKEN, "the full text is kept for /unparsed"
     assert len(db.q("SELECT 1 FROM log WHERE action='unparsed'")) == 1
     # the channel edits it into a parseable message -> the next resync saves it and the alert clears
     broken.message = RESERVATIONS[0].replace("رقم القطعة: 172", "رقم القطعة: 8172")
     assert await lst.resync() == 1 and db.unparsed_today(today) == []
+
+
+async def test_unparsed_hide_restore_and_reason():
+    from app import main
+    from app.parser import why_unparsed
+    today = datetime.now(db.TZ).date().isoformat()
+    # real shape from 2026-10-29 (#10053): "تم حجز 1 قطعة" instead of "تم حجز قطعة"
+    text = RESERVATIONS[0].replace("تم حجز قطعة", "تم حجز 1 قطعة")
+    lst = make_listener([FakeMessage(310, text)])
+    await lst.resync()
+    assert 310 in [u["msg_id"] for u in db.unparsed_today(today)]
+    assert "تم حجز 1 قطعة" in why_unparsed(text)
+
+    main.unparsed_action(310, "dismiss")
+    assert 310 not in [u["msg_id"] for u in db.unparsed_today(today)], "hidden from the panel's alert"
+    listed = {u["msg_id"]: u for u in (await main.unparsed_list())["items"]}
+    assert listed[310]["dismissed"] and listed[310]["text"] == text and "تم حجز 1 قطعة" in listed[310]["reason"]
+    main.unparsed_action(310, "restore")
+    assert 310 in [u["msg_id"] for u in db.unparsed_today(today)]
+    main.unparsed_action(310, "dismiss")  # leave it hidden for the tests after this one
 
 
 async def test_insert_plot_dedupes_by_msg_id():

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -18,7 +19,7 @@ from pydantic import BaseModel  # noqa: E402
 from . import dashboard, db  # noqa: E402
 from .notify import notify, show_windows_toast, unread_important, windows_enabled  # noqa: E402
 from .listener import Listener  # noqa: E402
-from .parser import normalize  # noqa: E402
+from .parser import _AR_NORMALIZE, normalize, why_unparsed  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 STATIC = Path(__file__).resolve().parent / "static"
@@ -335,6 +336,7 @@ def state():
         "counts": counts,
         "missing": db.missing_day_counts(today),
         "unparsed": db.unparsed_today(today),
+        "tg_channel_id": db.get_setting("tg_channel_id"),
         "notifications_unread": unread_important(),
     }
 
@@ -481,6 +483,44 @@ def auto_mode(on: int):
     db.set_setting("auto_mode", 1 if on else 0)
     db.log("auto_mode", detail=str(on))
     notify("settings", "التحديث التلقائي اشتغل" if on else "التحديث التلقائي اتقفل")
+    return {"ok": True}
+
+
+@app.get("/unparsed")
+def unparsed_page():
+    return FileResponse(STATIC / "unparsed.html")
+
+
+@app.get("/api/unparsed")
+async def unparsed_list(day: str | None = None):
+    """Every message that looked like a reservation but didn't parse, with the reason and the full text.
+
+    While the listener is connected it also reads them from the channel: older rows stored only 200
+    characters, and the channel has the post/edit times. Read-only towards Telegram."""
+    items = db.unparsed(day)
+    try:
+        live = await listener.fetch([u["msg_id"] for u in items])
+    except Exception as e:
+        logging.getLogger("unparsed").warning("reading from the channel failed: %s", e)
+        live = {}
+    for u in items:
+        m = live.get(u["msg_id"])
+        if m and m.message and m.message != u["text"]:
+            u["text"] = m.message
+            db.set_unparsed_text(u["msg_id"], m.message)
+        u["posted_at"] = m.date.astimezone(db.TZ).replace(tzinfo=None).isoformat() if m else None
+        u["edited_at"] = m.edit_date.astimezone(db.TZ).replace(tzinfo=None).isoformat() if m and m.edit_date else None
+        u["deleted"] = bool(live) and m is None  # connected, but the channel no longer has it
+        u["reason"] = why_unparsed(u["text"])
+        u["counter"] = (c := re.search(r"اجمالي\s*اليوم\s*:?\s*(\d+)", u["text"].translate(_AR_NORMALIZE))) and int(c[1])
+    return {"items": items, "live": bool(live)}
+
+
+@app.post("/api/unparsed/{msg_id}/{action}")
+def unparsed_action(msg_id: int, action: str):
+    if action not in ("dismiss", "restore"):
+        raise HTTPException(404)
+    db.dismiss_unparsed(msg_id, hide=action == "dismiss")
     return {"ok": True}
 
 

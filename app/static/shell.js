@@ -6,6 +6,9 @@ const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":
 // "2026-10-28T14:19:08" -> "2:19 م" (12-hour clock everywhere)
 const t12 = iso => { if (!iso) return ""; const [h, m] = iso.slice(11, 16).split(":").map(Number);
   return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "ص" : "م"}`; };
+// opens the message in the Telegram desktop app (private channel: works for members only)
+const tgLink = msgId => Shell.state?.tg_channel_id
+  ? `tg://privatepost?channel=${Shell.state.tg_channel_id}&post=${msgId}` : null;
 const STATUS = { pending:"منتظر", done:"اتحدّث", failed:"محتاج مراجعة", rejected:"مرفوض", duplicate:"مكرر" };
 
 async function api(path, method = "GET") {
@@ -32,6 +35,8 @@ const Shell = (() => {
     { href: "/", icon: "📋", label: "الحجوزات" },
     { href: "/compare", icon: "📊", label: "مقارنة مع مدينتي",
       badge: s => s.compare?.wrong, hint: "حجوزات النهارده في مدينتي من غير رسالة تليجرام" },
+    { href: "/unparsed", icon: "📨", label: "رسايل مااتقرتش",
+      badge: s => s.unparsed?.length, hint: "رسايل النهارده اللي شكلها حجز ومااتقرتش" },
     { href: "/notifications", icon: "🔔", label: "الإشعارات",
       badge: s => s.notifications_unread, hint: "إشعارات مهمة مش مقروءة" },
   ];
@@ -39,6 +44,7 @@ const Shell = (() => {
   const subs = [];
   let state = null;
 
+  document.head.insertAdjacentHTML("beforeend", `<link rel="icon" href="/static/icon.ico">`);
   document.body.insertAdjacentHTML("afterbegin", `
   <header class="shell">
     <a class="brand" href="/"><span class="logo">🏗</span><span><b>بيت الوطن</b><small>مزامنة الحجوزات مع مدينتي</small></span></a>

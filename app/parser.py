@@ -65,6 +65,20 @@ def parse_reservation(text: str) -> dict | None:
     }
 
 
+def why_unparsed(text: str | None) -> str:
+    """Replays parse_reservation()'s checks in order and says (in Arabic, for the panel) which one rejected it."""
+    if not text:
+        return "الرسالة مفيهاش نص (صورة أو ملف بس)."
+    if HEADER not in text:
+        first = next((line.strip() for line in text.splitlines() if "تم حجز" in line), "")
+        return f'مفيهاش جملة "{HEADER}" بالظبط' + (f'. مكتوب فيها: "{first}"' if first else "") + "."
+    if not _field("رقم القطعة", text):
+        return 'مفيش سطر "• رقم القطعة: ..." بالشكل المعتاد.'
+    if not _search(r"🏙\s*(.+)", text):
+        return "مفيش سطر المدينة اللي بيبدأ بـ 🏙."
+    return "بتتقري عادي دلوقتي (يمكن اتعدلت بعد كده)."
+
+
 def plot_key(r: dict) -> str:
     """Identity of a plot: city + sector + block + plot number."""
     return "|".join(normalize(r.get(k)) for k in ("city", "sector", "block", "plot"))

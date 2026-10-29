@@ -42,7 +42,15 @@ UI text is Egyptian Arabic, RTL.
     - An edit that no longer parses is logged as `edit_unparsed`.
     - Resync doesn't apply edits to rows that already exist. Only the handler does.
   - A message containing "تم حجز" that doesn't parse is logged once as `unparsed` (`msg <id>: <first 200 chars>`).
-    `db.unparsed_today()` feeds the panel's expandable "في N رسالة مااتقرتش" alert, leaving out any message that has a plot row since.
+    `db.unparsed_today()` feeds the panel's expandable "في N رسالة مااتقرتش" alert, leaving out any message that has a
+    plot row since, or that the user hid with its ✕ (table `unparsed_dismissed`, `POST /api/unparsed/{id}/dismiss|restore`).
+  - The full text is logged; rows before 2026-10-29 kept only 200 characters.
+  - Page `/unparsed` (`app/static/unparsed.html`, header link "📨 رسايل مااتقرتش") lists every unparsed message, all days, as
+    open / hidden / saved-since. Each card shows the reason (`parser.why_unparsed()`), the counter, the times and the full text.
+    `GET /api/unparsed` reads them back from the channel while the listener is connected (`Listener.fetch()`, read-only):
+    it upgrades truncated texts and adds the post/edit times.
+  - "✈️ افتح في التليجرام" links are `tg://privatepost?channel=<id>&post=<msg_id>`. They open the Telegram desktop app,
+    members only. The id is saved as setting `tg_channel_id` when the listener connects.
 - `app/db.py`: SQLite (`data.sqlite3`, overridable with `SYNC_DB_PATH`, which tests use). Tables: `plots`, `settings`, `region_aliases`, `log`.
   - Plot statuses: pending | done | rejected | failed | duplicate.
   - `missing_day_counts()` uses the channel's sequential "إجمالي اليوم" counter to detect missed messages.
@@ -104,6 +112,10 @@ UI text is Egyptian Arabic, RTL.
   - Adding a page: one `LINKS` entry plus one `FileResponse` route in `main.py`.
 - `app/static/index.html`: the panel (الحجوزات). Vanilla JS, polls `/api/state` and `/api/plots` every 5s.
 - `check_dashboard.py`: read-only connection check (login + search, prints parsed rows, dumps `debug_page.html` if nothing parsed).
+- Desktop launcher: `scripts/make_shortcut.ps1` draws `app/static/icon.ico` (also the tab icon) and creates the desktop
+  shortcut "بيت الوطن – الحجوزات" -> `start.bat`, window minimized. Keep the script saved as UTF-8 with BOM, or
+  PowerShell 5.1 garbles the Arabic. `run.py` opens the browser once the server answers; if the port is already
+  taken (the panel is running), it only opens the browser and exits.
 - `scripts/find_message.py N`: read-only. Finds today's channel message with daily counter N and says which
   `parse_reservation()` check rejects it. It uses a temp copy of `telegram.session`, so it's safe while the panel runs.
 - `tests/`:

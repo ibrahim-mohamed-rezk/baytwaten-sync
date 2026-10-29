@@ -23,6 +23,13 @@
   .actions { display:flex; gap:6px; align-items:center; }
   #missingBox button { margin-inline-start:8px; }
   #unparsedBox summary { cursor:pointer; }
+  .raw-head { display:flex; align-items:center; gap:10px; margin-top:10px; color:var(--text); }
+  .raw-head + pre.raw { margin-top:6px; }
+  a.tg-btn { background:#229ed9; color:#fff; text-decoration:none; padding:4px 12px; border-radius:999px; font-size:13px; }
+  a.tg-btn:hover { filter:brightness(.95); }
+  .x-btn { margin-inline-start:auto; border:none; background:transparent; color:#991b1b; font-size:16px; padding:2px 8px; }
+  .x-btn:hover { background:#fee2e2; }
+  a.all-unparsed { display:inline-block; margin-top:10px; }
   pre.raw { white-space:pre-wrap; background:#fff; border:1px solid var(--line); border-radius:8px; padding:8px 10px;
             margin:8px 0 0; font:13px/1.5 "Segoe UI", Tahoma, sans-serif; color:var(--text); }
   .modal { position:fixed; inset:0; background:#1d243366; display:flex; align-items:center; justify-content:center;
@@ -49,7 +56,8 @@
     <button id="refetchBtn" title="بيقرا كل رسايل النهارده من القناة تاني، ومش هيكرر اللي اتسجل">🔁 هات الرسايل الناقصة</button>
   </div>
   <div id="unparsedBox" class="alert err">
-    <details><summary id="unparsedTitle"></summary><div id="unparsedList"></div></details>
+    <details><summary id="unparsedTitle"></summary><div id="unparsedList"></div>
+      <a class="link all-unparsed" href="/unparsed">📨 كل الرسايل اللي مااتقرتش، بالسبب والتفاصيل ←</a></details>
   </div>
   <div id="dashBox" class="alert">الربط مع الداشبورد لسه مش جاهز. لحد ما يجهز: اضغط على رقم القطعة عشان تنسخه، حدّثها في الداشبورد، وبعدين اضغط "تم يدوي".</div>
 
@@ -112,13 +120,18 @@ function renderState(s) {
   $("missingBox").style.display = state.missing.length ? "block" : "none";
   $("missingText").textContent = state.missing.length
     ? `⚠️ في رسايل ماوصلتش النهارده (حسب عداد "إجمالي اليوم"): ${state.missing.join("، ")}` : "";
-  const un = state.unparsed || [], unKey = un.map(u => u.msg_id).join(",");
+  const un = state.unparsed || [], unKey = un.map(u => u.msg_id).join(",") + "|" + state.tg_channel_id;
   $("unparsedBox").style.display = un.length ? "block" : "none";
   if ($("unparsedBox")._key !== unKey) {  // don't re-render every poll, it would collapse the details
     $("unparsedBox")._key = unKey;
     $("unparsedTitle").textContent = `⚠️ في ${un.length} رسالة مااتقرتش (شكلها حجز بس الشكل بتاعها مختلف). دوس عشان تشوفها`;
-    $("unparsedList").innerHTML = un.map(u =>
-      `<pre class="raw"><b>#${u.msg_id} – ${esc(t12(u.at))}</b>\n${esc(u.text)}</pre>`).join("");
+    $("unparsedList").innerHTML = un.map(u => {
+      const link = tgLink(u.msg_id);
+      return `<div class="raw-head"><b>#${u.msg_id} – ${esc(t12(u.at))}</b>${link
+        ? `<a class="tg-btn" href="${link}" title="بيفتح الرسالة دي في برنامج التليجرام">✈️ افتح في التليجرام</a>` : ""}
+        <button class="x-btn" data-hide="${u.msg_id}" title="اخفيها من هنا (هتفضل في صفحة الرسايل اللي مااتقرتش)">✕</button></div>
+        <pre class="raw">${esc(u.text)}</pre>`;
+    }).join("");
   }
   $("dashBox").style.display = state.dashboard_configured ? "none" : "block";
   $("approveAll").disabled = !state.dashboard_configured || !state.counts.pending;
@@ -244,6 +257,13 @@ $("verifyAll").onclick = async () => {
     await refresh();
   }
 };
+$("unparsedList").addEventListener("click", async e => {
+  const id = e.target.dataset.hide; if (!id) return;
+  e.target.disabled = true;
+  try { await api(`/api/unparsed/${id}/dismiss`, "POST"); toast(`اتخفت رسالة #${id}. لسه موجودة في صفحة الرسايل اللي مااتقرتش`, false); }
+  catch (err) { toast("⚠️ " + err.message); }
+  await refresh();
+});
 $("refetchBtn").onclick = async () => {
   $("refetchBtn").disabled = true;
   try { const r = await api("/api/listener/refetch-today", "POST"); toast(r.added ? `✅ رجعت ${r.added} رسالة ناقصة` : "مفيش رسايل ناقصة في القناة نفسها"); }
