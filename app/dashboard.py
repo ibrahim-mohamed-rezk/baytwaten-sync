@@ -233,9 +233,10 @@ async def reserve(dashboard_id) -> dict:
 
 # ---------- matching ----------
 
-# "163" | "163 5" (from "163-5") | "163a" | "ca23" (letters first, العاشر من رمضان).
+# "163" | "163 5" (from "163-5") | "163a" | "ca23" (letters first, العاشر من رمضان) | "35 1 1" (السادات
+# الحى المتميز: number, المجاورة, then a sub-plot nobody names; the area tells those apart).
 # A digit suffix needs a separator, so "1635" stays one number. Letters on both sides don't parse.
-PLOT_NO = re.compile(r"^(?:([^\W\d_]+)\s*)?(\d+)(?:\s*([^\W\d_]+)|\s+(\d+))?$")
+PLOT_NO = re.compile(r"^(?:([^\W\d_]+)\s*)?(\d+)(?:\s*([^\W\d_]+)|\s+(\d+)(?:\s+\d+)?)?$")
 
 
 def _split_plot(s: str | None) -> tuple[str, str | None] | None:
@@ -245,20 +246,26 @@ def _split_plot(s: str | None) -> tuple[str, str | None] | None:
     return str(int(m.group(2))), m.group(1) or m.group(3) or m.group(4)
 
 
-# Neighborhood code at the end of a block/region/المجاورة: Latin letters or digits after منطقة/المجاورة.
-# Spaces are dropped, so "منطقة ( T I)" -> "ti", "الحى 24 -منطقة TJ" -> "tj", "المجاورة ٥" -> "5".
-CODE = re.compile(r"(?:منطقه|مجاوره)\s+([a-z0-9]+(?:\s+[a-z0-9]+)*)$")
+# Neighborhood codes in a block/region/المجاورة: Latin letters or digits after منطقة/المجاورة.
+# Spaces are dropped, so "منطقة ( T I)" -> "ti", "الحى 24 -منطقة TJ" -> "tj", "المجاورة ٥" -> "5",
+# "منطقة (CC) فيلات" -> "cc". A block can name two: "المجاورة 1- منطقة B" -> ["1", "b"].
+CODE = re.compile(r"(?:منطقه|مجاوره)\s+([a-z0-9]+(?:\s+[a-z0-9]+)*)")
+
+
+def _codes(s: str | None) -> list[str]:
+    return [c.replace(" ", "") for c in CODE.findall(normalize(s))]
 
 
 def _code(s: str | None) -> str | None:
-    m = CODE.search(normalize(s))
-    return m.group(1).replace(" ", "") if m else None
+    codes = _codes(s)
+    return codes[-1] if codes else None
 
 
 def same_plot_number(dash_plot: str, tg_plot: str, tg_block: str | None = None) -> bool:
     """Some cities keep the neighborhood in the plot number ("163-5", "163A", "TI38") while Telegram sends
     the bare number and puts the neighborhood in المربع ("المجاورة 5", "منطقة ( T I)"). The dashboard
-    suffix must then equal the block's last token or its neighborhood code; a different neighborhood never matches."""
+    suffix must then equal the block's last token or one of its neighborhood codes; a different neighborhood never
+    matches."""
     a, b = _split_plot(dash_plot), _split_plot(tg_plot)
     if not (a and b):
         return normalize(dash_plot) == normalize(tg_plot)
@@ -267,7 +274,7 @@ def same_plot_number(dash_plot: str, tg_plot: str, tg_block: str | None = None) 
     if a[1] == b[1]:
         return True
     block = normalize(tg_block).split()
-    return b[1] is None and a[1] in {block[-1] if block else None, _code(tg_block)} - {None}
+    return b[1] is None and a[1] in {block[-1] if block else None, *_codes(tg_block)} - {None}
 
 
 def _neighborhood(c: dict) -> str | None:
@@ -285,19 +292,22 @@ def match(plot: dict, candidates: list[dict], region_alias: str | None = None) -
 
     Returns (candidates, confident). Confident = city, region, plot number (with neighborhood) and area all
     agree (Telegram 🏙 = الموقع, 🏘 = المنطقة). Area also breaks ties (Telegram rounds: 594 vs 594.20).
-    The region may also equal the block's part before " - ": 🏘 "المحور المركزى" with block
-    "المحور المركزى الثانى - منطقة D" is the dashboard's "المحور المركزى الثانى". Exact match only, no prefix guessing.
+    The region may also equal whole " - " parts of the block: 🏘 "المحور المركزى" with block
+    "المحور المركزى الثانى - منطقة D" is the dashboard's "المحور المركزى الثانى", and block
+    "منطقة 350 فدان - جنوب الحى السياحى - منطقة (2)" holds "جنوب الحى السياحى - منطقة (٢)". Exact match only, no prefix guessing.
     A row whose neighborhood code contradicts Telegram's (TJ vs "منطقة ( T I)") is never a candidate,
     not even as a suggestion.
     """
     block = plot.get("block") or ""
     tg_split = _split_plot(plot["plot"])
-    tg_code = (tg_split and tg_split[1]) or _code(block)
+    tg_codes = {tg_split[1]} if tg_split and tg_split[1] else set(_codes(block))
     same = [c for c in candidates
             if same_plot_number(c["plot"], plot["plot"], block)
             and normalize(c["city"]) == normalize(plot["city"])
-            and not (tg_code and _neighborhood(c) not in (None, tg_code))]
-    wanted = {normalize(plot["sector"]), normalize(block), normalize(re.split(r"\s+[-–]\s+", block)[0])}
+            and not (tg_codes and _neighborhood(c) not in (None, *tg_codes))]
+    parts = re.split(r"\s+[-–]\s+", block)
+    wanted = {normalize(plot["sector"])} | {normalize(" ".join(parts[i:j]))
+                                           for i in range(len(parts)) for j in range(i + 1, len(parts) + 1)}
     if region_alias:
         wanted.add(normalize(region_alias))
     by_region = [c for c in same if normalize(c["region"]) in wanted - {""}]

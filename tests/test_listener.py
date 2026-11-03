@@ -176,16 +176,17 @@ async def test_gap_triggers_resync():
         return 0
     lst.resync = fake_resync
     old = L.TICK, L.RESYNC_EVERY, L.GAP_RESYNC_EVERY
-    L.TICK, L.RESYNC_EVERY, L.GAP_RESYNC_EVERY = 0.01, 3600, 0.05
+    # wide margins: Windows sleeps in ~15 ms steps, so tighter timings were flaky
+    L.TICK, L.RESYNC_EVERY, L.GAP_RESYNC_EVERY = 0.01, 3600, 0.5
     db.missing_day_counts, real = (lambda day: [67]), db.missing_day_counts
     try:
         task = asyncio.create_task(lst._resync_loop())
-        await asyncio.sleep(0.03)
+        await asyncio.sleep(0.1)
         assert calls == [1], "a gap resyncs right away"
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.1)
         assert calls == [1], "but at most once per GAP_RESYNC_EVERY"
         db.missing_day_counts = lambda day: []
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.6)
         assert calls == [1], "no gap -> only the periodic RESYNC_EVERY"
         task.cancel()
     finally:

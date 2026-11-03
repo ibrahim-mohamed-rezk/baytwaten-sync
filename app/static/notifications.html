@@ -52,7 +52,7 @@ const KIND = { new_plot:"قطعة جديدة", reserved:"حجز", done:"اتحد
                unparsed:"مااتقرتش", recovered:"استرجاع", edit:"تعديل", listener:"القناة", settings:"إعدادات",
                panel:"رسالة اللوحة", test:"تجربة", wrong:"حجز غلط في مدينتي" };
 const TABS = [["all","الكل"],["important","المهم"],["unread","مش مقروء"]];
-let filter = "all", unreadOnLoad = new Set();
+let filter = TABS.some(([k]) => k === param("filter")) ? param("filter") : "all", unreadOnLoad = new Set();
 
 
 function dayLabel(d) {
@@ -64,7 +64,7 @@ function renderTabs(data) {
   const n = { unread: data.unread, important: data.unread_important };
   $("tabs").innerHTML = TABS.map(([k, label]) =>
     `<button data-k="${k}" class="${k === filter ? "active" : ""}">${label}${n[k] ? ` (${n[k]})` : ""}</button>`).join(" ");
-  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { filter = b.dataset.k; load(); });
+  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { filter = b.dataset.k; setParam("filter", filter, "all"); load(); });
 }
 
 async function load() {

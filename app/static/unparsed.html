@@ -59,7 +59,7 @@ function render() {
   const n = { open: 0, hidden: 0, saved: 0, all: items.length };
   items.forEach(u => n[stateOf(u)]++);
   $("tabs").innerHTML = TABS.map(([k, l]) => `<button data-k="${k}" class="${k === tab ? "active" : ""}">${l} (${n[k]})</button>`).join("");
-  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { tab = b.dataset.k; render(); });
+  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { tab = b.dataset.k; setParam("tab", tab, "open"); render(); });
 
   const shown = items.filter(u => tab === "all" || stateOf(u) === tab);
   if (!shown.length) {

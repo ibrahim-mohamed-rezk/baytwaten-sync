@@ -145,6 +145,36 @@ def test_match_spaced_neighborhood_code():
     assert [c["id"] for c in match(tg, rows)[0]] == [22875]
 
 
+def test_match_code_before_arabic_word():
+    """Real العاشر من رمضان rows for q=45 (2026-11-02): the code sits before "فيلات" in the block,
+    "منطقة (CC) فيلات". It used to be missed, so CC45 was "not found"."""
+    region = "مركز المال و الاعمال (فيلات)"
+    rows = [{"id": i, "plot": p, "city": "العاشر من رمضان", "region": region, "neighborhood": n, "area": a,
+             "status": "available"} for i, p, n, a in [(3651, "CD45", "المجاورة CD", 819.7),
+                                                         (3578, "CC45", "المجاورة CC", 575.3)]]
+    tg = {"city": "العاشر من رمضان", "sector": region, "block": "مركز المال و الاعمال - منطقة (CC) فيلات",
+          "plot": "45", "area": 575}
+    pool, confident = match(tg, rows)
+    assert [c["id"] for c in pool] == [3578] and confident, pool
+    tg["block"] = "مركز المال و الاعمال - منطقة (CE) فيلات"
+    assert match(tg, rows)[0] == []
+
+
+def test_match_three_part_number():
+    """Real السادات rows (2026-11-02): the dashboard numbers الحى المتميز plots "35-1-1" (number, المجاورة,
+    sub-plot) and Telegram says plot 35, block "المجاورة 1- منطقة B". It used to suggest B35 in another region."""
+    rows = [{"id": i, "plot": p, "city": "السادات", "region": r, "neighborhood": n, "area": a, "status": "available"}
+            for i, p, r, n, a in [(17328, "35-1-1", "الحى المتميز", "المجاورة 1", 625.0),
+                                  (17329, "35-1-2", "الحى المتميز", "المجاورة 1", 663.1),
+                                  (17330, "35-1-3", "الحى المتميز", "المجاورة 1", 629.5),
+                                  (4496, "B35", "المحور المركزى الثانى", "", 558.0)]]
+    tg = {"city": "السادات", "sector": "الحى المتميز", "block": "المجاورة 1- منطقة B", "plot": "35", "area": 625}
+    pool, confident = match(tg, rows)
+    assert [c["id"] for c in pool] == [17328] and confident, pool
+    tg["area"] = 640  # none of the sub-plots -> unsure, nothing picked
+    assert not match(tg, rows)[1]
+
+
 def test_match_region_from_block():
     """Real السادات rows (2026-10-28): 🏘 says "المحور المركزى" but the dashboard region is the block's
     part before " - "."""
@@ -162,6 +192,21 @@ def test_match_region_from_block():
     tg["block"] = "المحور المركزى - منطقة D"
     pool, confident = match(tg, rows)
     assert [c["id"] for c in pool] == [4675] and not confident, pool
+
+
+def test_match_region_inside_block():
+    """Real أسوان الجديدة row (2026-11-02): 🏘 "الحى السياحى", block "منطقة 350 فدان - جنوب الحى السياحى - منطقة (2)";
+    the dashboard region is the block's last two parts."""
+    rows = [{"id": "113", "plot": "44", "city": "اسوان الجديدة", "region": "جنوب الحى السياحى - منطقة (٢)",
+             "neighborhood": "", "area": 530.5, "status": "available"},
+            {"id": "7213", "plot": "244", "city": "اسوان الجديدة", "region": "الحى السياحى - منطقة 350 فدان - منطقة 1",
+             "neighborhood": "", "area": 500.0, "status": "available"}]
+    tg = {"city": "أسوان الجديدة", "sector": "الحى السياحى", "plot": "44", "area": 530,
+          "block": "منطقة 350 فدان - جنوب الحى السياحى - منطقة (2)"}
+    pool, confident = match(tg, rows)
+    assert [c["id"] for c in pool] == ["113"] and confident, pool
+    tg["block"] = "منطقة 350 فدان - شمال الحى السياحى - منطقة (2)"  # a part that isn't the region -> unsure
+    assert not match(tg, rows)[1]
 
 
 def test_dashboard_page():

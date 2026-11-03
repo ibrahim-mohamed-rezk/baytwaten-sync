@@ -83,7 +83,11 @@ UI text is Egyptian Arabic, RTL.
     - `other_day`: linked to a row from another day. E.g. yesterday evening's messages recovered and reserved this morning.
     - `likely`: not linked, but a row ticked by hand has the same city and number.
     - `wrong`: no Telegram message at all.
-  - `not_reserved` lists that day's rows still pending or in review.
+  - Every Telegram row of that day lands in one bucket too: `ok`, `likely`, `tg_other_day` (done, but madinty reserved it
+    on another day: fixed later, or 12-2 AM, see below) or `not_reserved` (still pending or in review). The page shows
+    both sums: telegram = ok + likely + tg_other_day + not_reserved, dashboard = ok + other_day + likely + wrong.
+  - **madinty's تاريخ الحجز is UTC**, and so is its reserved_from/reserved_to day filter, so Cairo's 12-2 AM reservations
+    count on the day before. `_dash_local()` converts it; the page and notifications show Cairo time (`reserved_local`).
   - Page `/compare` (`app/static/compare.html`, "📊 مقارنة مع مدينتي") calls `GET /api/compare?day=` on load and on demand,
     never on the 5s poll. It has a day picker (`?day=` in the URL), summary cards, a verdict and one collapsible table per bucket.
   - `compare_loop` runs a minute after startup, then every `COMPARE_EVERY` (15 min), for today. Each new `wrong` plot gets
@@ -110,7 +114,19 @@ UI text is Egyptian Arabic, RTL.
     the auto-mode switch and the ▶/⏸ listener button. It polls `/api/state` every 5s; pages subscribe with `Shell.onState(fn)`.
   - Helpers `$`, `esc`, `t12` (12-hour clock with ص/م, used for every time shown), `api`, `toast`, `STATUS`.
   - Adding a page: one `LINKS` entry plus one `FileResponse` route in `main.py`.
+  - A refresh reopens the same view on every page. Each page keeps its tab/filter/day/search/sort in the URL
+    (`param()` / `setParam()`; index: `tab`, `day`, `search`, `sort`, `dir`; notifications: `filter`; unparsed: `tab`;
+    compare: `day`). `Restore` (shell.js, sessionStorage) brings back the scroll position per URL and which `<details>`
+    were open, and the header links reopen each page's last view. It hooks `history.replaceState`, so pages just update their URL.
+    `/?q=<plot>` links are rewritten to `?tab=all&day=all&search=<plot>`.
 - `app/static/index.html`: the panel (الحجوزات). Vanilla JS, polls `/api/state` and `/api/plots` every 5s.
+  - A day picker (→ / date / ← / النهارده / كل الأيام) filters every tab. `?day=YYYY-MM-DD` or `?day=all` is kept in the URL;
+    with no `day` it follows today. The cards and tab counts come from `GET /api/plots/counts?day=` (empty = every day).
+  - Every column header sorts the table (click again to flip), in every tab. Sorting is client-side (`COLS`, `sortRows`);
+    `?sort=<key>&dir=asc|desc` is kept in the URL, default newest message first. `/api/plots` returns up to 5000 rows.
+    "اتحجزت امتى" is `plots.done_at`, set by `db.update_plot()` whenever the status becomes done (cleared otherwise);
+    older rows were backfilled from the last `approve`/`auto_verified` log entry. It is when we reserved or confirmed it,
+    not madinty's own تاريخ الحجز.
 - `check_dashboard.py`: read-only connection check (login + search, prints parsed rows, dumps `debug_page.html` if nothing parsed).
 - Desktop launcher: `scripts/make_shortcut.ps1` draws `app/static/icon.ico` (also the tab icon) and creates the desktop
   shortcut "بيت الوطن – الحجوزات" -> `start.bat`, window minimized. Keep the script saved as UTF-8 with BOM, or
@@ -154,11 +170,15 @@ UI text is Egyptian Arabic, RTL.
     sends the bare `163` and puts the neighborhood in المربع (`المجاورة 5`). `same_plot_number()` splits a number
     into (base, suffix) and matches when the bases agree and either the suffixes are equal or Telegram has none and
     the dashboard suffix equals the block's last token. A different neighborhood never matches.
-  - Neighborhood code (`_code`): Latin letters or digits after منطقة/المجاورة at the end of a block, region or
+  - Neighborhood code (`_code`): Latin letters or digits after منطقة/المجاورة anywhere in a block, region or
     المجاورة, with spaces dropped. Telegram writes some codes spaced: "منطقة ( T I)" -> `ti` (the dashboard has `TI38`).
+    Arabic words may follow the code: "منطقة (CC) فيلات" -> `cc` (العاشر من رمضان `CC45`). A block can name two codes,
+    "المجاورة 1- منطقة B" -> {1, b}; either may match. السادات الحى المتميز numbers plots `35-1-1` (number, المجاورة,
+    sub-plot): the sub-plot is ignored and the area picks among `35-1-1/2/3`; a tie stays "أكتر من قطعة مطابقة".
     A candidate whose own code (from its plot number, المجاورة or region) contradicts Telegram's is dropped
     entirely, not even suggested. Before this, a bare `38` in district TJ was suggested for "( T I)".
-  - The region matches if it equals 🏘, the whole block, or the block's part before " - ". Example: السادات 🏘
+  - The region matches if it equals 🏘 or any run of whole " - " parts of the block (first part, whole block, last two…).
+    أسوان: block "منطقة 350 فدان - جنوب الحى السياحى - منطقة (2)" holds the region "جنوب الحى السياحى - منطقة (٢)". Example: السادات 🏘
     "المحور المركزى" with block "المحور المركزى الثانى - منطقة D" matches the region "المحور المركزى الثانى".
     These are exact (normalized) comparisons, never prefix guessing.
   - If the city and number match but the region name differs, the plot becomes `failed` with `suggest_id`.
@@ -167,7 +187,12 @@ UI text is Egyptian Arabic, RTL.
       saved for "( T I)"). If today's suggestion differs, it updates the row, logs `link_region_stale`,
       returns 409 and acts on nothing.
     - It only stores an alias when the region name actually differs. An area-only difference teaches no alias.
-    - Failed rows aren't re-matched automatically, so their notes can be outdated until approved or linked again.
+    - Rows in review are re-matched read-only by `refresh_failed()` every `RECHECK_EVERY` and on "🔄 راجع مع الداشبورد",
+      so their note/suggestion follow matching fixes (log `rematched`). It never reserves; a confident match already
+      reserved in the dashboard becomes done (`auto_verified`).
+    - When several candidates fit equally (السادات `56-1-1` 630.0 vs `56-1-2` 630.5, Telegram "630"), the row keeps them in
+      `plots.choices` (JSON) and the panel shows one button per candidate, with its madinty status.
+      `POST /api/plots/{id}/approve?dashboard_id=` only accepts an id from those choices.
 
 ## Status (2026-10-28)
 Done and tested locally: the parser on real messages, the panel UI, dedupe and gap detection, and the whole approve flow

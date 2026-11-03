@@ -68,9 +68,12 @@ _conn = connect()
 _conn.executescript(SCHEMA)
 # columns added after the first release
 _cols = {r[1] for r in _conn.execute("PRAGMA table_info(plots)")}
-for col in ("suggest_id", "suggest_region"):
+for col in ("suggest_id", "suggest_region", "done_at", "choices"):  # choices: JSON list of equally good candidates
     if col not in _cols:
         _conn.execute(f"ALTER TABLE plots ADD COLUMN {col} TEXT")
+if "done_at" not in _cols:  # backfill: when the row was last approved / verified, else its last change
+    _conn.execute("""UPDATE plots SET done_at = COALESCE((SELECT MAX(at) FROM log WHERE log.plot_id = plots.id
+                     AND action IN ('approve', 'auto_verified')), updated_at) WHERE status = 'done'""")
 _conn.commit()
 
 
@@ -165,6 +168,10 @@ def dismiss_unparsed(msg_id: int, hide: bool = True) -> None:
 
 def update_plot(plot_id: int, **fields) -> None:
     fields["updated_at"] = now()
+    if "status" in fields:  # done_at = when it was reserved / confirmed in the dashboard
+        fields.setdefault("done_at", fields["updated_at"] if fields["status"] == "done" else None)
+        if fields["status"] != "failed":  # candidates to pick from only make sense while in review
+            fields.setdefault("choices", None)
     cols = ", ".join(f"{k}=?" for k in fields)
     x(f"UPDATE plots SET {cols} WHERE id=?", (*fields.values(), plot_id))
 

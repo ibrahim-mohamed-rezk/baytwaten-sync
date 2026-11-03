@@ -156,6 +156,38 @@ async def test_search_reads_every_page():
         dashboard.PER_PAGE = old
 
 
+async def test_choices_and_refresh_failed():
+    """Two sub-plots fit equally (السادات "56-1-1" 630.0 vs "56-1-2" 630.5, Telegram says 630): the row keeps both as
+    choices and the user picks one. refresh_failed() re-matches rows in review without reserving anything."""
+    from fastapi import HTTPException
+    use_dashboard(httpx.ASGITransport(app=fake.app))
+    for i, plot, area in (("8801", "56-1-1", 630.0), ("8802", "56-1-2", 630.5)):
+        fake.PLOTS[i] = dict(plot=plot, phase="1", city="السادات", region="الحى المتميز", nb="المجاورة 1", area=area,
+                             status="available")
+    p = add_plot("السادات", "الحى المتميز", "56", 630, block="المجاورة 1- منطقة D")
+    posts = len(fake.POSTS)
+    r = await main.approve(p)
+    assert r["status"] == "failed" and [c["id"] for c in main.json.loads(r["choices"])] == ["8801", "8802"], r
+    assert len(fake.POSTS) == posts
+
+    # an old note (from before a matching fix) is refreshed, read-only
+    db.update_plot(p, note="old note", choices=None, suggest_id="4702")
+    assert await main.refresh_failed() >= 1
+    r = row(p)
+    assert r["note"] != "old note" and r["suggest_id"] is None and r["choices"], r
+    assert len(fake.POSTS) == posts, "refresh_failed never reserves"
+    assert await main.refresh_failed() == 0, "nothing changed -> rows left alone"
+
+    try:  # only one of the offered choices can be picked
+        await main.approve_one(p, dashboard_id="9414")
+        raise AssertionError("a plot that wasn't offered must be refused")
+    except HTTPException as e:
+        assert e.status_code == 409
+    r = await main.approve_one(p, dashboard_id="8802")
+    assert (r["status"], r["dashboard_id"], r["choices"]) == ("done", "8802", None), r
+    assert fake.POSTS[-1] == "8802" and fake.PLOTS["8801"]["status"] == "available"
+
+
 async def test_compare_day():
     """The dashboard's own "reserved on D" list vs Telegram, one plot per bucket. Read-only."""
     use_dashboard(httpx.ASGITransport(app=fake.app))
@@ -175,15 +207,21 @@ async def test_compare_day():
     other = tg("102", "2030-01-14", status="done", dashboard_id="9002")   # yesterday's message
     manual = tg("103", D, status="done", note="اتحدّثت يدوي")                # ticked by hand, no link
     waiting = tg("106", D)                                                  # still pending
+    later = tg("105", D, status="done", dashboard_id="9005")  # the dashboard reserved it another (UTC) day
     posts = len(fake.POSTS)
 
     r = await main.compare_day(D)
-    assert (r["telegram"], r["dashboard"], r["ok"]) == (3, 4, 1), r  # 102 was posted the day before
+    assert (r["telegram"], r["dashboard"], r["ok"]) == (4, 4, 1), r  # 102 was posted the day before
     assert [d["id"] for d in r["wrong"]] == ["9004"], r["wrong"]
     assert [(d["id"], d["our"]["id"]) for d in r["likely"]] == [("9003", manual)]
     assert [(d["id"], d["our"]["id"]) for d in r["other_day"]] == [("9002", other)]
     assert [p["id"] for p in r["not_reserved"]] == [waiting] and ok
-    assert r["wrong"][0]["reserved_at"] == f"{D} 10:00 AM"
+    assert [(d["id"], d["our"]["id"], d["reserved_local"]) for d in r["tg_other_day"]] ==         [("9005", later, "2030-01-14T12:00:00")], r["tg_other_day"]
+    # every number accounted for on both sides
+    assert r["telegram"] == r["ok"] + len(r["likely"]) + len(r["tg_other_day"]) + len(r["not_reserved"])
+    assert r["dashboard"] == r["ok"] + len(r["other_day"]) + len(r["likely"]) + len(r["wrong"])
+    # madinty's تاريخ الحجز is UTC: 10:00 AM there is noon in Cairo
+    assert (r["wrong"][0]["reserved_at"], r["wrong"][0]["reserved_local"]) == (f"{D} 10:00 AM", f"{D}T12:00:00")
     assert len(fake.POSTS) == posts, "comparing is read-only"
 
     # the background check warns once per wrong plot, not on every run
@@ -191,7 +229,7 @@ async def test_compare_day():
     await main.compare_and_warn(D)
     warned = db.q("SELECT * FROM notifications WHERE kind='wrong'")
     assert len(warned) == 1 and "104" in warned[0]["title"] and warned[0]["important"], warned
-    assert "10:00 ص" in warned[0]["body"], warned[0]["body"]
+    assert "12:00 م" in warned[0]["body"], warned[0]["body"]
 
     # the header badge carries today's result only
     assert main.state()["compare"] is None

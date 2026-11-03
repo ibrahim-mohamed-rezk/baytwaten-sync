@@ -29,6 +29,62 @@ function toast(msg, log = true) {
     body: JSON.stringify({ text: msg, level }) }).catch(() => {});
 }
 
+// The page's own state (tab, filter, search, day…) lives in the URL, so a refresh or a shared link reopens the same view.
+const param = (name, def = "") => new URLSearchParams(location.search).get(name) ?? def;
+function setParam(name, value, def = "") {  // the default is left out, to keep URLs short
+  const u = new URL(location.href);
+  if (value === def || value === null || value === undefined) u.searchParams.delete(name); else u.searchParams.set(name, value);
+  history.replaceState(history.state, "", u);
+}
+
+// After a refresh: back to the same scroll position, with the same sections (<details>) open.
+// Kept per tab in sessionStorage (per page), never required: the page works the same without it.
+const Restore = (() => {
+  const store = (k, v) => { try { if (v === undefined) return JSON.parse(sessionStorage.getItem(k) || "null");
+                                   sessionStorage.setItem(k, JSON.stringify(v)); } catch { return null; } };
+  // scroll is kept per view (path + query: tab, day…); a header link reopens a page's last view
+  const sKey = () => "scroll:" + location.pathname + location.search, dKey = "open:" + location.pathname;
+  const remember = () => {
+    store("last:" + location.pathname, location.search);
+    document.querySelector("header.shell nav a.active")?.setAttribute("href", location.pathname + location.search);
+  };
+  const replace = history.replaceState.bind(history);  // every page updates its URL this way
+  history.replaceState = (...args) => { replace(...args); remember(); };
+  remember();
+  const keyOf = d => d.id || d.dataset.key || d.querySelector("summary")?.id
+    || (d.querySelector("summary h3, summary")?.textContent || "").trim().slice(0, 60);
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";  // the page builds itself after load
+
+  let saveT;
+  addEventListener("scroll", () => { clearTimeout(saveT); saveT = setTimeout(() => store(sKey(), scrollY), 150); }, { passive: true });
+  addEventListener("pagehide", () => store(sKey(), scrollY));
+
+  // content arrives asynchronously, so keep trying until the page is tall enough (or the user scrolls first)
+  const y = store(sKey());
+  if (y > 0) {
+    let stop = false;
+    const quit = () => { stop = true; };
+    ["wheel", "touchstart", "keydown", "mousedown"].forEach(e => addEventListener(e, quit, { once: true, passive: true }));
+    const t0 = Date.now();
+    (function tryScroll() {
+      if (stop) return;
+      if (document.documentElement.scrollHeight - innerHeight >= y) { scrollTo(0, y); if (Math.abs(scrollY - y) < 2) return; }
+      if (Date.now() - t0 < 6000) setTimeout(tryScroll, 100);
+    })();
+  }
+
+  const open = store(dKey) || {};
+  const apply = root => root.querySelectorAll?.("details").forEach(d => { const k = keyOf(d); if (k in open) d.open = open[k]; });
+  document.addEventListener("toggle", e => {
+    if (e.target.tagName !== "DETAILS") return;
+    open[keyOf(e.target)] = e.target.open; store(dKey, open);
+  }, true);
+  new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => n.nodeType === 1 && (n.tagName === "DETAILS"
+    ? (keyOf(n) in open && (n.open = open[keyOf(n)])) : apply(n))))).observe(document.body, { childList: true, subtree: true });
+  apply(document);
+  return { remember, last: path => store("last:" + path) || "" };
+})();
+
 const Shell = (() => {
   // to add a page: one entry here, one FileResponse route in app/main.py
   const LINKS = [
@@ -48,7 +104,7 @@ const Shell = (() => {
   document.body.insertAdjacentHTML("afterbegin", `
   <header class="shell">
     <a class="brand" href="/"><span class="logo">🏗</span><span><b>بيت الوطن</b><small>مزامنة الحجوزات مع مدينتي</small></span></a>
-    <nav>${LINKS.map(l => `<a href="${l.href}" class="${l.href === here ? "active" : ""}">${l.icon} <span>${l.label}</span>
+    <nav>${LINKS.map(l => `<a href="${l.href === here ? l.href + location.search : l.href + Restore.last(l.href)}" class="${l.href === here ? "active" : ""}">${l.icon} <span>${l.label}</span>
       <b class="badge" data-badge="${l.href}" title="${esc(l.hint || "")}" hidden></b></a>`).join("")}</nav>
     <div class="state">
       <span class="st" id="stListener"><i></i><span>…</span></span>

@@ -3,7 +3,7 @@
 Run:  python -m uvicorn tests.fake_dashboard:app --port 9900
 Then in .env: DASHBOARD_BASE_URL=http://127.0.0.1:9900  DASHBOARD_LOGIN_PATH=/login  DASHBOARD_EMAIL=any  DASHBOARD_PASSWORD=pw
 """
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -52,5 +52,5 @@ async def upd(pid: str, req: Request):
     if req.headers.get("x-csrf-token") != CSRF: return JSONResponse({"message": "CSRF token mismatch."}, 419)
     POSTS.append(pid)
     PLOTS[pid]["status"] = (await req.json())["status"]
-    PLOTS[pid]["at"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")  # تاريخ الحجز, like "2026-10-28 02:03 PM"
+    PLOTS[pid]["at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %I:%M %p")  # تاريخ الحجز, UTC like madinty
     return {"success": True, "message": "تم التحديث بنجاح", "plot": {"id": int(pid), "status": PLOTS[pid]["status"]}}

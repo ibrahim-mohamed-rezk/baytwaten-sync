@@ -15,10 +15,18 @@
   .stat.red b { color:var(--red); } .stat.gray { border-inline-start-color:var(--gray); }
   .alert { display:none; }
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  .day-picker { display:flex; gap:4px; align-items:center; }
+  .day-picker button.active { background:var(--text); color:#fff; border-color:var(--text); }
   input[type=search] { min-width:240px; }
   tr.new { animation: flash 3s ease-out; }
   @keyframes flash { from { background:#e0e7ff; } to { background:transparent; } }
   .plotno { font-weight:700; font-size:15px; cursor:copy; }
+  th[data-sort] { cursor:pointer; user-select:none; }
+  th[data-sort]:hover { color:var(--text); background:var(--soft); }
+  th[data-sort] i { font-style:normal; font-size:11px; opacity:.35; margin-inline-start:4px; }
+  th.sorted { color:var(--blue); } th.sorted i { opacity:1; }
+  .sub { display:block; color:var(--muted); font-size:12px; }
+  button .sub { color:inherit; opacity:.85; font-size:11px; }
   .note { margin-top:4px; color:var(--muted); font-size:12px; white-space:normal; max-width:280px; }
   .actions { display:flex; gap:6px; align-items:center; }
   #missingBox button { margin-inline-start:8px; }
@@ -66,7 +74,13 @@
   <div class="toolbar">
     <div class="tabs" id="tabs"></div>
     <input type="search" id="search" placeholder="بحث برقم القطعة أو المنطقة…">
-    <label><input type="checkbox" id="todayOnly" checked> النهارده بس</label>
+    <div class="day-picker">
+      <button id="prevDay" title="اليوم اللي قبله">→</button>
+      <input type="date" id="day" title="اختار يوم">
+      <button id="nextDay" title="اليوم اللي بعده">←</button>
+      <button id="todayBtn">النهارده</button>
+      <button id="allDays" title="كل الحجوزات من غير فلتر يوم">كل الأيام</button>
+    </div>
     <span style="flex:1"></span>
     <button id="verifyAll" title="بيشوف بس، مش بيغيّر حاجة في الداشبورد">🔄 راجع مع الداشبورد</button>
     <button class="ok" id="approveAll">✅ حدّث كل المنتظر</button>
@@ -74,10 +88,7 @@
 
   <div class="table-wrap">
     <table>
-      <thead><tr>
-        <th>الوقت</th><th>#اليوم</th><th>المدينة</th><th>الحي / المنطقة</th><th>المربع / المجاورة</th>
-        <th>رقم القطعة</th><th>المساحة</th><th>التميز</th><th>المقدم</th><th>الحالة</th><th></th>
-      </tr></thead>
+      <thead><tr id="heads"></tr></thead>
       <tbody id="rows"></tbody>
     </table>
     <div class="empty" id="empty" hidden>مفيش قطع هنا</div>
@@ -104,12 +115,14 @@
 <script>
 const TABS = [["pending","منتظر"],["failed","محتاج مراجعة"],["done","اتحدّث"],["duplicate","مكرر"],["rejected","مرفوض"],["","الكل"]];
 let tab = "pending", state = null, seen = new Set(), firstLoad = true;
+let day = null, dayCounts = {};  // day: "YYYY-MM-DD", "" = every day, null = today (follows midnight)
+const currentDay = () => day ?? state?.today ?? "";
 
 function renderTabs() {
-  const c = state?.counts || {};
+  const c = dayCounts;
   $("tabs").innerHTML = TABS.map(([k, label]) =>
     `<button data-k="${k}" class="${k === tab ? "active" : ""}">${label}${k && c[k] ? ` (${c[k]})` : ""}</button>`).join(" ");
-  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { tab = b.dataset.k; renderTabs(); loadRows(); });
+  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { tab = b.dataset.k; setParam("tab", tab || "all", "pending"); firstLoad = true; renderTabs(); loadRows(); });
 }
 
 function renderState(s) {
@@ -136,41 +149,131 @@ function renderState(s) {
   $("dashBox").style.display = state.dashboard_configured ? "none" : "block";
   $("approveAll").disabled = !state.dashboard_configured || !state.counts.pending;
   if (!$("verifyAll")._busy) $("verifyAll").disabled = !state.dashboard_configured;
-  const c = state.counts, total = Object.values(c).reduce((a, b) => a + b, 0);
-  $("stats").innerHTML = [["blue", total, "حجوزات النهارده"], ["amber", c.pending || 0, "منتظر"],
+}
+
+function renderStats() {
+  const c = dayCounts, total = Object.values(c).reduce((a, b) => a + b, 0), d = currentDay(), L = state?.listener || {};
+  const label = !d ? "كل الحجوزات" : d === state?.today ? "حجوزات النهارده" : `حجوزات ${d}`;
+  $("stats").innerHTML = [["blue", total, label], ["amber", c.pending || 0, "منتظر"],
     ["green", c.done || 0, "اتحدّث"], [c.failed ? "red" : "gray", c.failed || 0, "محتاج مراجعة"],
     ["gray", L.last_message_at ? t12(L.last_message_at) : "—", "آخر رسالة"]]
     .map(([cls, v, l]) => `<div class="card stat ${cls}"><b>${v}</b><span>${l}</span></div>`).join("");
-  renderTabs();
 }
+
+function renderDayPicker() {
+  const d = currentDay();
+  if ($("day").value !== d && document.activeElement !== $("day")) $("day").value = d;
+  $("day").max = state?.today || "";
+  $("nextDay").disabled = !d || d >= state?.today;
+  $("prevDay").disabled = !d;
+  $("todayBtn").classList.toggle("active", d === state?.today);
+  $("allDays").classList.toggle("active", !d);
+}
+
+function setDay(d) {  // d: "YYYY-MM-DD" or "" for every day
+  day = d === state?.today ? null : d;
+  firstLoad = true;  // a new filter isn't "new rows"
+  const u = new URL(location.href);
+  if (day === null) u.searchParams.delete("day"); else u.searchParams.set("day", day || "all");
+  history.replaceState(null, "", u);
+  loadRows();
+}
+
+function shiftDay(n) {
+  const t = new Date(currentDay() + "T12:00:00");
+  t.setDate(t.getDate() + n);
+  setDay(t.toLocaleDateString("en-CA"));
+}
+
+// Sorting: click a column header; again flips the direction. Kept in the URL (?sort=area&dir=asc), same for every tab.
+const coll = new Intl.Collator("ar", { numeric: true, sensitivity: "base" });
+const money = v => parseFloat(String(v ?? "").replace(/[^\d.]/g, "")) * (/k/i.test(v) ? 1000 : /m/i.test(v) ? 1e6 : 1);
+const COLS = [  // [key, header, value to sort by, first direction]
+  ["posted_at", "وقت الرسالة", r => r.posted_at, "desc"],
+  ["msg_id", "رقم الرسالة", r => r.msg_id, "desc"],
+  ["day_count", "#اليوم", r => r.day_count, "desc"],
+  ["city", "المدينة", r => r.city, "asc"],
+  ["sector", "الحي / المنطقة", r => r.sector, "asc"],
+  ["block", "المربع / المجاورة", r => r.block, "asc"],
+  ["plot", "رقم القطعة", r => r.plot, "asc"],
+  ["area", "المساحة", r => r.area, "desc"],
+  ["features", "التميز", r => r.features, "asc"],
+  ["down_payment", "المقدم", r => money(r.down_payment), "desc"],
+  ["status", "الحالة", r => STATUS[r.status], "asc"],
+  ["done_at", "اتحجزت امتى", r => r.done_at, "desc"],
+];
+const urlSort = new URLSearchParams(location.search);
+let sort = COLS.some(c => c[0] === urlSort.get("sort")) ? urlSort.get("sort") : "posted_at";
+let sortDir = urlSort.get("dir") === "asc" ? "asc" : "desc";
+
+function renderHeads() {
+  $("heads").innerHTML = COLS.map(([k, label]) => `<th data-sort="${k}" class="${k === sort ? "sorted" : ""}"
+    title="رتّب بـ${label}">${label}<i>${k === sort ? (sortDir === "asc" ? "▲" : "▼") : "⇅"}</i></th>`).join("") + "<th></th>";
+}
+$("heads").addEventListener("click", e => {
+  const th = e.target.closest("th[data-sort]"); if (!th) return;
+  const k = th.dataset.sort;
+  sortDir = k === sort ? (sortDir === "asc" ? "desc" : "asc") : COLS.find(c => c[0] === k)[3];
+  sort = k;
+  const u = new URL(location.href);
+  if (sort === "posted_at" && sortDir === "desc") { u.searchParams.delete("sort"); u.searchParams.delete("dir"); }
+  else { u.searchParams.set("sort", sort); u.searchParams.set("dir", sortDir); }
+  history.replaceState(null, "", u);
+  firstLoad = true;
+  loadRows();
+});
+
+function sortRows(rows) {
+  const get = COLS.find(c => c[0] === sort)[2], sign = sortDir === "asc" ? 1 : -1;
+  const empty = v => v === null || v === undefined || v === "" || Number.isNaN(v);
+  return rows.sort((a, b) => {
+    const x = get(a), y = get(b);
+    if (empty(x) || empty(y)) return empty(x) - empty(y);  // blanks always last
+    const c = typeof x === "number" && typeof y === "number" ? x - y : coll.compare(String(x), String(y));
+    return c * sign || (b.msg_id - a.msg_id);
+  });
+}
+// "2026-11-02T15:28:54" -> "3:28 م", with the date when it isn't the day being shown
+const when = iso => !iso ? "" : iso.slice(0, 10) === currentDay() ? esc(t12(iso))
+  : `${esc(t12(iso))}<span class="sub">${esc(iso.slice(0, 10))}</span>`;
 
 async function loadRows() {
   const p = new URLSearchParams();
   if (tab) p.set("status", tab);
-  if ($("todayOnly").checked && state) p.set("day", state.today);
+  const d = currentDay();
+  if (d) p.set("day", d);
   if ($("search").value.trim()) p.set("search", $("search").value.trim());
-  const rows = await api("/api/plots?" + p);
+  const [rows, counts] = await Promise.all([api("/api/plots?" + p), api("/api/plots/counts?day=" + d)]);
+  dayCounts = counts;
+  renderDayPicker(); renderStats(); renderTabs();
   $("empty").hidden = rows.length > 0;
   const canApprove = state?.dashboard_configured;
-  $("rows").innerHTML = rows.map(r => {
+  renderHeads();
+  $("rows").innerHTML = sortRows(rows).map(r => {
     const isNew = !firstLoad && !seen.has(r.id);
     seen.add(r.id);
     const act = [];
     if (r.status === "pending" || r.status === "failed") {
-      if (canApprove && r.suggest_id) act.push(`<button class="ok" data-a="link-region" title="هيفتكر إن المنطقة دي هي نفسها بعد كده">اربط وحدّث</button>`);
+      const choices = JSON.parse(r.choices || "[]");
+      if (canApprove && choices.length) choices.forEach(c => act.push(`<button class="ok" data-a="approve" data-pick="${esc(c.id)}"
+        data-label="${esc(c.plot)} (${esc(c.area)} م²)" ${c.status === "reserved" ? "data-reserved=1" : ""} title="${esc(c.region)} – قطعة مدينتي #${esc(c.id)}">${c.status === "reserved" ? "هي دي" : "احجز"} ${esc(c.plot)}<span class="sub">${esc(c.area)} م²${c.status === "reserved" ? " · محجوزة في مدينتي" : ""}</span></button>`));
+      else if (canApprove && r.suggest_id) act.push(`<button class="ok" data-a="link-region" title="هيفتكر إن المنطقة دي هي نفسها بعد كده">اربط وحدّث</button>`);
       else if (canApprove) act.push(`<button class="ok" data-a="approve">حدّث الداشبورد</button>`);
       act.push(`<button data-a="mark-done">تم يدوي</button>`);
       act.push(`<button class="danger" data-a="reject">رفض</button>`);
     } else {
       act.push(`<button data-a="reset">رجّعه منتظر</button>`);
     }
+    const tg = tgLink(r.msg_id);
+    if (tg) act.push(`<a class="tg-btn" href="${tg}" title="افتح رسالة القطعة دي في برنامج التليجرام">✈️ تليجرام</a>`);
     if (state?.dashboard_url) act.push(`<a class="link" target="_blank" href="${state.dashboard_url}?q=${encodeURIComponent(r.plot)}&per_page=500">افتح ↗</a>`);
     return `<tr data-id="${r.id}" class="${isNew ? "new" : ""}">
-      <td>${esc(t12(r.posted_at))}</td><td>${esc(r.day_count)}</td>
+      <td>${when(r.posted_at)}</td><td class="muted">${esc(r.msg_id)}</td><td>${esc(r.day_count)}</td>
       <td>${esc(r.city)}</td><td class="wrap">${esc(r.sector)}</td><td class="wrap">${esc(r.block)}</td>
       <td class="plotno" title="اضغط للنسخ">${esc(r.plot)}</td>
       <td>${r.area ? esc(r.area) + " م²" : ""}</td><td>${esc(r.features)}</td><td>${esc(r.down_payment)}</td>
       <td><span class="status s-${r.status}">${STATUS[r.status]}</span>${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}</td>
+      <td>${r.status === "done" ? when(r.done_at) : ""}</td>
       <td><div class="actions">${act.join("")}</div></td></tr>`;
   }).join("");
   firstLoad = false;
@@ -182,10 +285,15 @@ $("rows").addEventListener("click", async e => {
     navigator.clipboard.writeText(e.target.textContent).then(() => toast("اتنسخ رقم القطعة " + e.target.textContent));
     return;
   }
-  const a = e.target.dataset.a; if (!a) return;
-  e.target.disabled = true;
+  const btn = e.target.closest("[data-a]"); if (!btn) return;
+  const a = btn.dataset.a, pick = btn.dataset.pick;
+  if (pick && !await askConfirm("القطعة دي هي الصح؟", btn.dataset.reserved
+        ? `${btn.dataset.label} (#${pick}) محجوزة في مدينتي أصلاً، فهتتعلّم "اتحدّث" بس من غير ما يتغيّر حاجة هناك.`
+        : `هتتحجز في مدينتي القطعة ${btn.dataset.label} (#${pick}). اتأكد إنها الصح.`,
+      `أيوه، ${btn.dataset.label}`)) return;
+  btn.disabled = true;
   try {
-    const r = await api(`/api/plots/${tr.dataset.id}/${a}`, "POST");
+    const r = await api(`/api/plots/${tr.dataset.id}/${a}${pick ? "?dashboard_id=" + encodeURIComponent(pick) : ""}`, "POST");
     if (a === "approve" || a === "link-region") toast(r.status === "done" ? "✅ اتحدّثت في الداشبورد" : "⚠️ " + (r.note || "فشل"));
   } catch (err) { toast("⚠️ " + err.message); }
   await refresh();
@@ -275,16 +383,29 @@ $("refetchBtn").onclick = async () => {
 $("verifyClose").onclick =() => { $("verifyModal").hidden = true; };
 
 let searchTimer;
-$("search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadRows, 300); };
-$("todayOnly").onchange = loadRows;
+$("search").oninput = () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { setParam("search", $("search").value.trim()); loadRows(); }, 300);
+};
+$("prevDay").onclick = () => shiftDay(-1);
+$("nextDay").onclick = () => shiftDay(1);
+$("todayBtn").onclick = () => setDay(state.today);
+$("allDays").onclick = () => setDay("");
+$("day").onchange = () => setDay($("day").value);
 
 Shell.onState(async s => { renderState(s); await loadRows(); });
 async function refresh() {
   try { await Shell.refresh(); } catch (e) { $("errorBox").style.display = "block"; $("errorBox").textContent = "⚠️ السيرفر مش شغال؟ " + e.message; }
 }
 // "افتح القطعة" links from the notifications page: /?q=<plot number>
-const linkQ = new URLSearchParams(location.search).get("q");
-if (linkQ) { $("search").value = linkQ; $("todayOnly").checked = false; tab = ""; }
+// (q is turned into tab=all&day=all&search=… so a refresh keeps whatever the user changes after)
+const linkQ = param("q");
+if (linkQ) { setParam("q", null); setParam("tab", "all"); setParam("day", "all"); setParam("search", linkQ); }
+const pickTab = param("tab", "pending");
+if (TABS.some(([k]) => (k || "all") === pickTab)) tab = pickTab === "all" ? "" : pickTab;
+$("search").value = param("search");
+const linkDay = param("day");
+if (linkDay) day = linkDay === "all" ? "" : linkDay;
 refresh();
 </script>
 </body>

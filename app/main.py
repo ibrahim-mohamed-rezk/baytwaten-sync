@@ -1,10 +1,11 @@
 import asyncio
+import json
 import logging
 import os
 import re
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -53,28 +54,34 @@ async def _search(number: str, cached: bool) -> list[dict]:
 
 
 async def find_target(plot: dict, force_id: str | None = None,
-                      cached: bool = False) -> tuple[dict | None, bool, dict | None, str | None]:
+                      cached: bool = False) -> tuple[dict | None, bool, dict | None, str | None, list[dict]]:
     """Read-only lookup of the dashboard plot for a Telegram row.
 
-    Returns (target, confident, suggestion, reason). target is set only for a confident single match
+    Returns (target, confident, suggestion, reason, choices). target is set only for a confident single match
     (or force_id); suggestion is the lone candidate in a differently named region; reason says why
-    there's no target. Network/auth errors propagate.
+    there's no target; choices are the candidates when several fit equally (the user picks one).
+    Network/auth errors propagate.
     """
     found = await _search(plot["plot"], cached)
     if force_id:
         target = next((c for c in found if c["id"] == force_id), None)
         if not target:
-            return None, False, None, f"القطعة #{force_id} مش موجودة في الداشبورد"
-        return target, True, None, None
+            return None, False, None, f"القطعة #{force_id} مش موجودة في الداشبورد", []
+        return target, True, None, None, []
     pool, confident = dashboard.match(plot, found, db.get_region_alias(plot["city"], plot["sector"]))
     if not pool:
-        return None, False, None, f"مفيش قطعة رقم {plot['plot']} في {plot['city']} على الداشبورد"
+        return None, False, None, f"مفيش قطعة رقم {plot['plot']} في {plot['city']} على الداشبورد", []
     if len(pool) > 1:
-        return None, False, None, "لقيت أكتر من قطعة مطابقة: " + "، ".join(
-            f"#{c['id']} {c['region']} {c['area']}م²" for c in pool)
+        return None, False, None, f"لقيت {len(pool)} قطع ممكن تكون هي ومش عارف أختار: " + "، ".join(
+            f"{c['plot']} ({c['area']}م²)" for c in pool) + ". اختار الصح من الزراير", pool
     if not confident:
-        return None, False, pool[0], None
-    return pool[0], True, None, None
+        return None, False, pool[0], None, []
+    return pool[0], True, None, None, []
+
+
+def _choices_json(pool: list[dict]) -> str:
+    return json.dumps([{k: c.get(k) for k in ("id", "plot", "region", "area", "status")} for c in pool],
+                      ensure_ascii=False)
 
 
 def _mark_unsure(plot: dict, c: dict) -> None:
@@ -100,7 +107,14 @@ async def approve(plot_id: int, by: str = "manual", force_id: str | None = None,
     if plot["status"] == "done":
         return plot
     try:
-        target, _, c, reason = await find_target(plot, force_id, cached)
+        target, _, c, reason, choices = await find_target(plot, force_id, cached)
+        if choices:
+            db.update_plot(plot_id, status="failed", note=reason, choices=_choices_json(choices),
+                           suggest_id=None, suggest_region=None)
+            db.log("approve_unsure", plot_id, f"{by}: {len(choices)} choices")
+            notify("review", f"محتاجة مراجعة: {_label(plot)}", reason, level="warning",
+                   plot_id=plot_id, important=by != "manual")
+            return _get_plot(plot_id)
         if c:
             _mark_unsure(plot, c)
             db.log("approve_unsure", plot_id, f"{by}: suggest #{c['id']}")
@@ -147,7 +161,7 @@ async def verify(plot_id: int) -> dict | None:
     if not rows or rows[0]["status"] != "pending" or not dashboard.is_configured():
         return rows[0] if rows else None
     try:
-        target, confident, _, _ = await find_target(rows[0], cached=True)
+        target, confident, *_ = await find_target(rows[0], cached=True)
     except Exception as e:
         db.log("verify_error", plot_id, str(e))
         notify("error", "الداشبورد مش بيرد", str(e)[:200], level="error", important=True, throttle="dashboard")
@@ -216,9 +230,12 @@ async def compare_day(day: str) -> dict:
       other_day  linked to a Telegram row from another day (e.g. yesterday evening's, reserved this morning)
       likely     not linked, but a Telegram row handled by hand (no saved link) has the same city and number
       wrong      no Telegram message at all: reserved in the dashboard by someone else, or by mistake
-    plus not_reserved: our rows of that day still pending or in review.
+    and every Telegram row of that day not counted above lands in one too:
+      tg_other_day  done, but the dashboard reserved it on another day (fixed later, or reserved before the message)
+      not_reserved  still pending or in review
+    so telegram = ok + likely + tg_other_day + not_reserved, and dashboard = ok + other_day + likely + wrong.
     """
-    dash = await dashboard.reserved_on(day)
+    dash = [{**d, "reserved_local": _dash_local(d["reserved_at"])} for d in await dashboard.reserved_on(day)]
     ours = db.q("SELECT * FROM plots WHERE posted_at LIKE ? AND status NOT IN ('duplicate','rejected')", (day + "%",))
     linked = {r["dashboard_id"]: r for r in db.q("SELECT * FROM plots WHERE dashboard_id IS NOT NULL")}
     unlinked = db.q("SELECT * FROM plots WHERE dashboard_id IS NULL AND status NOT IN ('duplicate','rejected')")
@@ -236,18 +253,42 @@ async def compare_day(day: str) -> dict:
         else:
             out["wrong"].append(d)
     out["not_reserved"] = [r for r in ours if r["status"] in ("pending", "failed")]
+    listed, likely_ours = {d["id"] for d in dash}, {x["our"]["id"] for x in out["likely"]}
+    out["tg_other_day"] = []
+    for r in ours:
+        if r["status"] != "done" or r["dashboard_id"] in listed or r["id"] in likely_ours:
+            continue
+        d = None
+        if r["dashboard_id"]:  # look up when the dashboard did reserve it (cached search, read-only)
+            try:
+                d = next((c for c in await _search(r["plot"], cached=True) if c["id"] == r["dashboard_id"]), None)
+            except Exception:
+                logging.getLogger("compare").exception("lookup of plot %s failed", r["plot"])
+        d = d or {"id": r["dashboard_id"], "plot": r["plot"], "city": r["city"], "region": r["sector"],
+                  "area": r["area"], "reserved_at": None, "status": None}
+        out["tg_other_day"].append({**d, "reserved_local": _dash_local(d["reserved_at"]), "our": r})
     if day == datetime.now(db.TZ).date().isoformat():  # the header badge shows today's result
         _last_compare.update(day=day, wrong=len(out["wrong"]), checked_at=out["checked_at"])
     return out
 
 
-def _ar_time(s: str | None) -> str:
-    """madinty's "2026-10-28 09:03 AM" -> "9:03 ص" (12-hour clock, like the panel)."""
+def _dash_local(s: str | None) -> str | None:
+    """madinty's تاريخ الحجز is UTC ("2026-11-01 10:24 PM" = 12:24 AM on the 2nd in Cairo) -> local ISO.
+    Its reserved_from/reserved_to filter goes by the UTC day too, so Cairo's 12-2 AM count on the day before."""
     try:
-        t = datetime.strptime(s or "", "%Y-%m-%d %I:%M %p")
+        t = datetime.strptime(s or "", "%Y-%m-%d %I:%M %p").replace(tzinfo=timezone.utc)
     except ValueError:
+        return None
+    return t.astimezone(db.TZ).replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def _ar_time(s: str | None) -> str:
+    """madinty's "2026-10-28 09:03 AM" (UTC) -> "11:03 ص" local (12-hour clock, like the panel)."""
+    t = _dash_local(s)
+    if not t:
         return s or "؟"
-    return f"{t.hour % 12 or 12}:{t.minute:02d} {'ص' if t.hour < 12 else 'م'}"
+    h, m = int(t[11:13]), t[14:16]
+    return f"{h % 12 or 12}:{m} {'ص' if h < 12 else 'م'}"
 
 
 async def compare_and_warn(day: str) -> dict:
@@ -274,10 +315,55 @@ async def compare_loop():
         await asyncio.sleep(COMPARE_EVERY)
 
 
+async def refresh_failed() -> int:
+    """READ-ONLY on the dashboard: re-match every row in review, so its note and suggestion follow matching fixes
+    (a saved note can say "not found" for a plot that matches now). Never reserves; a confident match that is
+    already reserved is ticked off as done, like verify(). Returns how many rows changed."""
+    changed = 0
+    for r in db.q("SELECT * FROM plots WHERE status='failed' ORDER BY msg_id"):
+        try:
+            target, _, c, reason, choices = await find_target(r, cached=True)
+        except Exception as e:
+            db.log("verify_error", r["id"], str(e))
+            continue
+        if _get_plot(r["id"])["status"] != "failed":  # the user acted meanwhile
+            continue
+        if target and target["status"] == "reserved":
+            db.update_plot(r["id"], status="done", dashboard_id=target["id"],
+                           note="كانت محجوزة في الداشبورد (اتشافت تلقائي)", suggest_id=None, suggest_region=None)
+            db.log("auto_verified", r["id"], f"dashboard #{target['id']}")
+            changed += 1
+            continue
+        if c:
+            if c["id"] != r["suggest_id"]:
+                _mark_unsure(r, c)
+                db.update_plot(r["id"], choices=None)
+                changed += 1
+            continue
+        if target:
+            note = (f"دلوقتي فيه قطعة مطابقة أكيدة #{target['id']} ({target['plot']}). اضغط \"حدّث الداشبورد\""
+                    if target["status"] == "available"
+                    else f"القطعة المطابقة #{target['id']} ({target['plot']}) حالتها في الداشبورد \"{target['status']}\"")
+            new = dict(note=note, suggest_id=None, suggest_region=None, choices=None)
+        else:
+            new = dict(note=reason, suggest_id=None, suggest_region=None,
+                       choices=_choices_json(choices) if choices else None)
+        if any(r[k] != v for k, v in new.items()):
+            db.update_plot(r["id"], **new)
+            db.log("rematched", r["id"], new["note"][:200])
+            changed += 1
+    return changed
+
+
 async def recheck_loop():
     while True:
         await asyncio.sleep(RECHECK_EVERY)
         enqueue_pending()
+        if dashboard.is_configured():
+            try:
+                await refresh_failed()
+            except Exception:
+                logging.getLogger("recheck").exception("refresh_failed")
 
 
 async def on_new_plot(plot_id: int):
@@ -341,6 +427,14 @@ def state():
     }
 
 
+@app.get("/api/plots/counts")
+def plot_counts(day: str | None = None):
+    """Rows per status for one day (YYYY-MM-DD), or for every day when `day` is empty: the panel's tabs and cards."""
+    rows = db.q("SELECT status, COUNT(*) n FROM plots" + (" WHERE posted_at LIKE ?" if day else "") + " GROUP BY status",
+                (day + "%",) if day else ())
+    return {r["status"]: r["n"] for r in rows}
+
+
 @app.get("/api/plots")
 def plots(status: str | None = None, day: str | None = None, search: str | None = None):
     sql, args = "SELECT * FROM plots WHERE 1=1", []
@@ -351,12 +445,17 @@ def plots(status: str | None = None, day: str | None = None, search: str | None 
     if search:
         sql += " AND (plot=? OR city LIKE ? OR sector LIKE ? OR block LIKE ?)"
         args += [search] + [f"%{search}%"] * 3
-    return db.q(sql + " ORDER BY msg_id DESC LIMIT 1000", args)
+    return db.q(sql + " ORDER BY msg_id DESC LIMIT 5000", args)  # the panel sorts them itself
 
 
 @app.post("/api/plots/{plot_id}/approve")
-async def approve_one(plot_id: int):
-    return await approve(plot_id)
+async def approve_one(plot_id: int, dashboard_id: str | None = None):
+    """dashboard_id: the candidate the user picked, among the row's saved choices only."""
+    if dashboard_id:
+        offered = {c["id"] for c in json.loads(_get_plot(plot_id)["choices"] or "[]")}
+        if dashboard_id not in offered:
+            raise HTTPException(409, "القطعة دي مش من الاختيارات. اعمل تحديث للصفحة وجرّب تاني")
+    return await approve(plot_id, force_id=dashboard_id)
 
 
 @app.post("/api/plots/{plot_id}/link-region")
@@ -370,11 +469,13 @@ async def link_region(plot_id: int):
     if not plot["suggest_id"]:
         raise HTTPException(400, "مفيش اقتراح للقطعة دي")
     try:
-        target, _, c, reason = await find_target(plot)
+        target, _, c, reason, _ = await find_target(plot)
     except dashboard.NotConfigured as e:
         raise HTTPException(409, str(e))
     except Exception as e:
         raise HTTPException(502, f"مش قادر أوصل للداشبورد: {e}")
+    if target and target["id"] == plot["suggest_id"]:  # matching improved and now agrees: just reserve it
+        return await approve(plot_id, force_id=target["id"])
     if not c or c["id"] != plot["suggest_id"]:
         if c:
             _mark_unsure(plot, c)
@@ -408,6 +509,7 @@ async def verify_pending():
     global _batch
     if _batch and _batch["checked"] < _batch["total"]:
         raise HTTPException(409, "في مراجعة شغالة دلوقتي")
+    await refresh_failed()  # rows in review get today's matching too
     ids = [r["id"] for r in db.q("SELECT id FROM plots WHERE status='pending' ORDER BY msg_id")]
     futs = [enqueue(i) for i in ids]
     batch = _batch = {"total": len(futs), "checked": 0, "done": 0}
